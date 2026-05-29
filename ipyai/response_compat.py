@@ -3,11 +3,6 @@
 FULL_RESPONSE_SENTINEL = "𝍁"
 
 
-def is_full_response(value):
-    "Return whether `value` is a FullResponse-like object without importing any provider package."
-    return any(cls.__name__ == "FullResponse" for cls in type(value).__mro__)
-
-
 def full_response_sentinel_text(value):
     "Wrap `value` in the serialization-safe no-truncation sentinel."
     text = str(value)

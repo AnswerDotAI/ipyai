@@ -1,12 +1,12 @@
 import json, warnings
 
 from litellm.types.utils import ModelResponse
-from fastllm.chat import (AsyncChat as FastLLMAsyncChat, AsyncStreamFormatter as FastLLMAsyncStreamFormatter, codex53spark,
-    codex54, codex54m, codex55, mk_tr_details)
+from fastllm.chat import (AsyncChat as FastLLMAsyncChat, AsyncStreamFormatter as FastLLMAsyncStreamFormatter, FullResponse,
+    codex53spark, codex54, codex54m, codex55, mk_tr_details)
 from fastllm.types import Part, PartType
 
 from .backend_common import BaseBackend, ConversationSeed, compact_tool, seed_to_flat_history
-from .response_compat import full_response_sentinel_text, is_full_response, strip_full_response_sentinel
+from .response_compat import full_response_sentinel_text, strip_full_response_sentinel
 
 
 class _BridgeNS(dict):
@@ -42,6 +42,12 @@ class AsyncStreamFormatter(FastLLMAsyncStreamFormatter):
         if text: self.display_text += text
         return text or ""
 
+    def _mk_tool_part(self, o, tc):
+        content = o.get("content") or ""
+        if isinstance(content, FullResponse): content = full_response_sentinel_text(content)
+        return Part(type=PartType.tool_result, text=content,
+            data=dict(id=tc.id, name=tc.function.name, arguments=json.loads(tc.function.arguments or "{}"), server=False))
+
     def format_item(self, o):
         if isinstance(o, ModelResponse):
             msg = o.choices[0].message if getattr(o, "choices", None) else None
@@ -51,14 +57,7 @@ class AsyncStreamFormatter(FastLLMAsyncStreamFormatter):
         if isinstance(o, dict) and "tool_call_id" in o:
             tc = self.tcs.pop(o["tool_call_id"], None)
             if tc is not None:
-                content = o.get("content") or ""
-                if is_full_response(content): content = full_response_sentinel_text(content)
-                tool_result = Part(
-                    type=PartType.tool_result,
-                    text=content,
-                    data=dict(id=tc.id, name=tc.function.name, arguments=json.loads(tc.function.arguments or "{}"), server=False),
-                )
-                self.outp += mk_tr_details(tool_result, mx=self.mx)
+                self.outp += mk_tr_details(self._mk_tool_part(o, tc), mx=self.mx)
                 self.final_text = self.outp
                 args = json.loads(tc.function.arguments or "{}")
                 return self._emit(compact_tool(tc.function.name, args, strip_full_response_sentinel(o.get("content") or "")))
