@@ -87,23 +87,23 @@ def test_exec_serializes_concurrent_requests(kernel_loop):
 
 
 def test_bridge_preserves_full_response_from_kernel_tool(kernel_bridge, kernel_loop, monkeypatch):
-    "A kernel-side tool that opts out of truncation with `FullResponse` must have its type preserved across the bridge — otherwise lisette's `_trunc_str` will truncate it on replay."
+    "A kernel-side tool that opts out of truncation with `FullResponse` must survive the bridge as a sentinel-wrapped string — otherwise fastllm's `_trunc_str` will truncate it on replay."
     import ipyai.kernel_bridge as kb
-    from lisette.core import FullResponse, _trunc_str
+    from fastllm.chat import FullResponse, _trunc_str
     monkeypatch.setattr(kb, "CUSTOM_TOOL_NAMES", tuple(list(kb.CUSTOM_TOOL_NAMES) + ["notebook_xml"]))
 
     async def _go():
         payload = "<ipynb>" + ("x" * 5000) + "</ipynb>"
         await kernel_bridge._exec(
-            "from lisette.core import FullResponse\n"
+            "from fastllm.chat import FullResponse\n"
             f"def notebook_xml(): return FullResponse({payload!r})\n")
         names = await kernel_bridge.available_names(force=True)
         assert "notebook_xml" in names, f"monkeypatch should expose notebook_xml: {names}"
 
         res = await kernel_bridge.call_tool("notebook_xml", {})
 
-        assert isinstance(res, FullResponse), f"FullResponse type must survive the kernel bridge, got {type(res).__name__}"
-        assert _trunc_str(res) == payload, "a FullResponse that survived the bridge must skip lisette's truncation"
+        assert isinstance(res, str) and res.startswith("𝍁") and res.endswith("𝍁"), f"bridge should return a sentinel-wrapped string, got {type(res).__name__}: {res!r}"
+        assert _trunc_str(res) == payload, "a FullResponse that survived the bridge must skip fastllm's truncation"
 
     kernel_loop.run_until_complete(_go())
 

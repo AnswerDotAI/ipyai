@@ -1,7 +1,6 @@
 "Fast backend-internal unit tests: api_client formatter overrides, Claude CLI backend internals, Codex backend internals, MCP socket server."
 import asyncio, json
 
-from lisette.core import FullResponse, fmt2hist, tool_dtls_tag
 from litellm.types.utils import Choices, Message, ModelResponse
 from safepyrun import RunPython
 
@@ -10,9 +9,10 @@ from ipyai.api_client import AsyncStreamFormatter, CodexAPIBackend, _BridgeNS
 from ipyai.backend_common import COMPLETION_THINK, compact_tool, tool_call
 from ipyai.mcp_server import ToolSocketServer
 from ipyai.tooling import ToolRegistry
+from fastllm.chat import FullResponse, fmt2hist, tool_dtls_tag
 
 
-# ---- api_client (lisette formatter overrides) ----
+# ---- api_client (fastllm formatter overrides) ----
 
 def _resp_with_tc(call_id="call_1", name="pyrun", arguments='{"code":"2+2"}'):
     msg = Message(role="assistant", content=None,
@@ -33,7 +33,7 @@ async def _run_api(items):
 
 def test_tool_call_truncates_long_param_values():
     "Long arg values must be truncated for display so the 🔧 line stays readable; short values render unchanged."
-    assert tool_call("pyrun", dict(code="1+1")) == "pyrun(code='1+1')"
+    assert tool_call("pyrun", dict(code="1+1")) == 'pyrun(code="1+1")'
     long = "x" * 5000
     rendered = tool_call("pyrun", dict(code=long))
     assert long not in rendered, f"long arg must not appear verbatim: {rendered!r}"
@@ -65,11 +65,11 @@ def test_api_display_truncates_long_tool_args_but_outp_keeps_full():
 
 def test_codex_api_backend_uses_chatgpt_provider_via_async_chat(shell):
     "CodexChat has been replaced by AsyncChat + codex model aliases (chatgpt/* via LiteLLM). Unprefixed names get `chatgpt/` prefixed so existing configs like 'gpt-5.4' keep working; already-resolved `chatgpt/...` passes through untouched."
-    from lisette.core import AsyncChat as LisetteAsyncChat, codex55
+    from fastllm.chat import AsyncChat as FastLLMAsyncChat, codex55
     backend = CodexAPIBackend(shell=shell)
     chat = backend._make_chat(model="gpt-5.4", sp="", hist=None, ns={}, tools=None)
-    assert isinstance(chat, LisetteAsyncChat), f"expected LisetteAsyncChat, got {type(chat).__name__}"
-    assert chat.model == "chatgpt/gpt-5.4", f"short model must be prefixed with chatgpt/: {chat.model!r}"
+    assert isinstance(chat, FastLLMAsyncChat), f"expected FastLLMAsyncChat, got {type(chat).__name__}"
+    assert chat.model == "gpt-5.4", f"short model must normalize back to the base model name: {chat.model!r}"
 
     chat2 = backend._make_chat(model=codex55, sp="", hist=None, ns={}, tools=None)
     assert chat2.model == codex55, f"already-resolved alias must pass through: {chat2.model!r}"
@@ -94,28 +94,28 @@ def test_api_full_tool_result_preserved_in_outp_compact_in_display():
 
     assert long in fmt.outp, "full tool result must live in outp for replay"
     assert fmt.final_text == fmt.outp
-    assert tool_dtls_tag in fmt.outp, "outp must use lisette's <details> block format so fmt2hist can round-trip"
+    assert tool_dtls_tag in fmt.outp, "outp must use fastllm's <details> block format so fmt2hist can round-trip"
 
-    assert "🔧 pyrun(code='big')" in joined, f"display must show compact one-liner: {joined!r}"
+    assert '🔧 pyrun(code="big")' in joined, f"display must show compact one-liner: {joined!r}"
     assert long not in joined, "display must NOT include the full tool result"
     assert long not in fmt.display_text
 
 
 def test_api_outp_round_trips_via_fmt2hist_with_full_tool_content():
-    "Replaying outp through lisette's fmt2hist must yield a real tool message whose content is the FULL original payload."
+    "Replaying outp through fastllm's fmt2hist must yield a real tool message whose content is the FULL original payload."
     long = "y" * 3000
     resp = _resp_with_tc(call_id="call_2", name="bash", arguments='{"cmd":"ls"}')
     tool_msg = {"tool_call_id": "call_2", "content": FullResponse(long)}
     fmt,_ = asyncio.run(_run_api([resp, tool_msg]))
 
     msgs = fmt2hist(fmt.outp)
-    tool_results = [m for m in msgs if isinstance(m, dict) and m.get("role") == "tool"]
+    tool_results = [m for m in msgs if getattr(m, "role", None) == "tool"]
     assert tool_results, f"fmt2hist should yield a tool result message: {msgs}"
-    assert tool_results[0]["content"] == long, "replayed tool content must be full, not truncated"
+    assert tool_results[0].content[0].text == long, "replayed tool content must be full, not truncated"
 
 
 def test_bridge_ns_does_not_wrap_plain_str_results():
-    "BridgeNS must not force-wrap tool results; truncation should use lisette's per-tool opt-in."
+    "BridgeNS must not force-wrap tool results; truncation should use fastllm's per-tool opt-in."
     ns = {"pyrun": lambda code: code}
     reg = ToolRegistry.from_ns(ns)
     bns = _BridgeNS(reg)
@@ -170,11 +170,11 @@ def test_ai_title_stub_identifies_title_only_file(tmp_path):
 
 def test_claude_tool_name_strips_mcp_prefix():
     assert claude._tool_name("mcp__ipy__pyrun") == "pyrun"
-    assert claude._tool_call("mcp__ipy__pyrun", dict(code="1+1")) == "pyrun(code='1+1')"
+    assert claude._tool_call("mcp__ipy__pyrun", dict(code="1+1")) == 'pyrun(code="1+1")'
 
 
 def test_claude_compact_tool_leaves_blank_line_after_summary():
-    assert claude._compact_tool("mcp__ipy__pyrun", dict(code="1+1"), "2") == "\n\n🔧 pyrun(code='1+1') => 2\n\n"
+    assert claude._compact_tool("mcp__ipy__pyrun", dict(code="1+1"), "2") == '\n\n🔧 pyrun(code="1+1") => 2\n\n'
 
 
 async def test_claude_async_stream_formatter_shows_live_tool_and_stores_compact_summary():
@@ -186,8 +186,8 @@ async def test_claude_async_stream_formatter_shows_live_tool_and_stores_compact_
 
     async for _ in fmt.format_stream(stream): seen.append(fmt.display_text)
 
-    assert seen[0] == "⌛ `pyrun(code='1+1')`"
-    assert "🔧 pyrun(code='1+1') => 2\n\n2" in fmt.final_text
+    assert seen[0] == '⌛ `pyrun(code="1+1")`'
+    assert '🔧 pyrun(code="1+1") => 2\n\n2' in fmt.final_text
     assert seen[-1].endswith("\n\n2")
 
 
@@ -209,11 +209,11 @@ class FakeCodexClient:
 
 def test_codex_tool_name_strips_mcp_prefix():
     assert codex._tool_name("mcp__ipy__pyrun") == "pyrun"
-    assert codex._tool_call("mcp__ipy__pyrun", dict(code="1+1")) == "pyrun(code='1+1')"
+    assert codex._tool_call("mcp__ipy__pyrun", dict(code="1+1")) == 'pyrun(code="1+1")'
 
 
 def test_codex_compact_tool_leaves_blank_line_after_summary():
-    assert codex._compact_tool("mcp__ipy__pyrun", dict(code="1+1"), "2") == "\n\n🔧 pyrun(code='1+1') => 2\n\n"
+    assert codex._compact_tool("mcp__ipy__pyrun", dict(code="1+1"), "2") == '\n\n🔧 pyrun(code="1+1") => 2\n\n'
 
 
 async def test_codex_async_stream_formatter_shows_live_tool_and_stores_compact_summary():
@@ -225,8 +225,8 @@ async def test_codex_async_stream_formatter_shows_live_tool_and_stores_compact_s
 
     async for _ in fmt.format_stream(stream): seen.append(fmt.display_text)
 
-    assert seen[0] == "⌛ `pyrun(code='1+1')`"
-    assert "🔧 pyrun(code='1+1') => 2\n\n2" in fmt.final_text
+    assert seen[0] == '⌛ `pyrun(code="1+1")`'
+    assert '🔧 pyrun(code="1+1") => 2\n\n2' in fmt.final_text
     assert seen[-1].endswith("\n\n2")
 
 

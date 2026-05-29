@@ -2,7 +2,7 @@
 import ast, asyncio, json
 from queue import Empty
 
-from .lisette_compat import full_response_sentinel_text
+from .response_compat import full_response_sentinel_text
 
 
 CUSTOM_TOOL_NAMES = ("pyrun", "bash")
@@ -111,9 +111,7 @@ if hasattr(_ipyai_r, '__await__'): _ipyai_r = await _ipyai_r
         res = exprs.get("_r")
         text = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, default=str)
         if exprs.get("_full"):
-            from lisette.core import FullResponse
-            from fastllm.chat import FullResponse
-            return FullResponse(full_response_sentinel_text(text))
+            return full_response_sentinel_text(text)
         return text
 
     async def read_var(self, name):
