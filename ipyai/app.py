@@ -123,8 +123,7 @@ class IPyAIApp(ZMQTerminalIPythonApp):
     def _bootstrap_kernel(self):
         async def _go():
             await self._bridge._exec(self._kernel_startup_code())
-            present = set(await self._bridge.present_names(CUSTOM_TOOL_NAMES))
-            await self._bridge.inject_tools(skip=present)
+            await self._bridge.inject_tools()
             await self._bridge.available_names(force=True)
             return await self._bridge.history_db_info()
         return asyncio.get_event_loop().run_until_complete(_go())

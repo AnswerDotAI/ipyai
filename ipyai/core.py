@@ -48,7 +48,9 @@ Use tools when they materially improve correctness:
 - use available shell/file tools for repository work
 - use web tools when fresh web context matters
 
-Respond concisely and practically. Markdown is rendered in a terminal with Rich."""
+Respond concisely and practically. Markdown is rendered in a terminal with Rich.
+
+Run `pyrun` and `bash` as code execution tools. In pyrun use `list_pyskills()` to list pyskills which are available AI tool modules. Import them as needed. Run `doc(sym)` inside pyrun to render docs for a module, class, function, instance, or any other Python object."""
 _COMPLETION_SP = "You are a code completion engine for IPython. Return only the completion text to insert at the cursor."
 
 MAGIC_NAME = "ipyai"
@@ -367,8 +369,8 @@ def load_config(path=None, backend_name=None):
 def load_sysp(path=None):
     path = Path(path or SYSP_PATH)
     _ensure_config_dir(path)
-    if not path.exists(): path.write_text(DEFAULT_SYSTEM_PROMPT)
-    return path.read_text()
+    custom = path.read_text() if path.exists() else ""
+    return DEFAULT_SYSTEM_PROMPT + ("\n\n" + custom if custom else "")
 
 
 def _cell_id(): return uuid.uuid4().hex[:8]

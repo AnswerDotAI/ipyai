@@ -5,11 +5,8 @@ from queue import Empty
 from .lisette_compat import full_response_sentinel_text
 
 
-CUSTOM_TOOL_NAMES = ("pyrun", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
-_INJECT_IMPORTS = dict(bash="from safecmd import bash", start_bgterm="from bgterm import start_bgterm",
-    write_stdin="from bgterm import write_stdin", close_bgterm="from bgterm import close_bgterm",
-    lnhashview_file="from exhash import lnhashview_file", exhash_file="from exhash import exhash_file",
-    list_pyskills="from pyskills import list_pyskills")
+CUSTOM_TOOL_NAMES = ("pyrun", "bash")
+_INJECT_IMPORTS = ("from pyskills import list_pyskills, doc", "from safecmd import bash", "from safepyrun import *")
 _EXEC_TIMEOUT = 20
 _TOOL_TIMEOUT = 600
 
@@ -73,16 +70,9 @@ class KernelBridge:
             exprs = {k: _expr_value(v) for k,v in (content.get("user_expressions") or {}).items()}
             return exprs, "".join(stream) if stream is not None else ""
 
-    async def present_names(self, names):
-        "Return subset of `names` already defined and callable in the kernel's user_ns."
-        probe = "[n for n in %r if n in globals() and callable(globals()[n])]" % list(names)
-        exprs,_ = await self._exec("", expressions={"_r": probe})
-        return list(exprs.get("_r") or [])
-
-    async def inject_tools(self, skip=()):
-        "Import the custom tool names (other than pyrun, which must come from an extension)."
-        skip = set(skip)
-        stmts = [_INJECT_IMPORTS[n] for n in CUSTOM_TOOL_NAMES if n in _INJECT_IMPORTS and n not in skip]
+    async def inject_tools(self):
+        "Run the default namespace imports; pyrun comes from an extension."
+        stmts = list(_INJECT_IMPORTS)
         for stmt in stmts:
             try: await self._exec(stmt)
             except Exception: pass
