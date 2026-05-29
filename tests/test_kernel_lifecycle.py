@@ -1,10 +1,10 @@
-"Separate kernel process: spawn + bootstrap + skip-existing-on-inject + shutdown."
+"Separate kernel process: spawn + bootstrap + authoritative tool injection + shutdown."
 import asyncio
 
 from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_client.manager import KernelManager
 
-from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
+from ipyai.kernel_bridge import KernelBridge
 
 
 _BOOTSTRAP = ("from IPython import get_ipython\n"
@@ -14,7 +14,7 @@ _BOOTSTRAP = ("from IPython import get_ipython\n"
     "_ip.history_manager.db_log_output = True\n")
 
 
-def test_spawn_bootstrap_skip_inject_shutdown():
+def test_spawn_bootstrap_overwrites_existing_tools_shutdown():
     km = KernelManager()
     km.start_kernel(extra_arguments=["--HistoryManager.enabled=True"])
     loop = asyncio.new_event_loop()
@@ -28,22 +28,17 @@ def test_spawn_bootstrap_skip_inject_shutdown():
             bridge = KernelBridge(client)
 
             await bridge._exec(_BOOTSTRAP)
-            present_after_bootstrap = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-            assert "pyrun" in present_after_bootstrap, "safepyrun extension should seed pyrun"
+            await bridge.inject_tools()
+            names = set(await bridge.available_names(force=True))
+            assert {"pyrun", "bash"} <= names
 
             await bridge._exec("def bash(**kw): return 'sentinel-preseeded'")
-            present_with_preseed = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-            assert "bash" in present_with_preseed, "preseeded callable should count as present"
-
-            await bridge.inject_tools(skip=present_with_preseed)
-
             res = await bridge.call_tool("bash", {})
-            assert "sentinel-preseeded" in res, f"inject_tools with skip should have preserved preseeded bash; got {res!r}"
+            assert "sentinel-preseeded" in res, f"preseeded bash should be active before reinjection; got {res!r}"
 
-            await bridge._exec("globals().pop('bash', None)")
-            await bridge.inject_tools(skip=set(await bridge.present_names(CUSTOM_TOOL_NAMES)))
-            names = set(await bridge.available_names(force=True))
-            assert "bash" in names, "after removing preseed and re-injecting, real bash should land"
+            await bridge.inject_tools()
+            res = await bridge.call_tool("bash", dict(cmd="printf 'real\\n'", as_dict=True))
+            assert "real" in res and "sentinel-preseeded" not in res, f"inject_tools should overwrite preseeded bash; got {res!r}"
 
             try: await client.stop_channels()
             except Exception: client.stop_channels()

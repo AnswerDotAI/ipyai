@@ -4,7 +4,7 @@ import asyncio, sqlite3
 from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_client.manager import KernelManager
 
-from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
+from ipyai.kernel_bridge import KernelBridge
 from ipyai.shell import IPyAIHistory
 
 
@@ -41,8 +41,8 @@ def test_attach_existing_kernel_without_shutdown():
             await secondary.wait_for_ready(timeout=30)
             sb = KernelBridge(secondary)
 
-            present = set(await sb.present_names(CUSTOM_TOOL_NAMES))
-            assert "pyrun" in present, "secondary client should see pyrun already present (from primary's bootstrap)"
+            names = set(await sb.available_names(force=True))
+            assert "pyrun" in names, "secondary client should see pyrun already present (from primary's bootstrap)"
 
             val = await sb.read_var("hidden")
             assert val == "walnut"
@@ -77,4 +77,3 @@ def test_attach_existing_kernel_without_shutdown():
         km.shutdown_kernel(now=False)
         try: loop.close()
         except Exception: pass
-

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import ipyai.core as core
-from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
+from ipyai.kernel_bridge import KernelBridge
 
 
 _IPYTHONDIR_SESSION = None
@@ -125,8 +125,7 @@ _KERNEL_BOOTSTRAP = ("from IPython import get_ipython\n"
 async def _prepare_kernel_bridge(client):
     bridge = KernelBridge(client)
     await bridge._exec(_KERNEL_BOOTSTRAP)
-    present = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-    await bridge.inject_tools(skip=present)
+    await bridge.inject_tools()
     await bridge.available_names(force=True)
     return bridge
 
