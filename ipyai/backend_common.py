@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
-from lisette.core import trunc_param
+from fastllm.chat import _trunc_param as trunc_param
 
 from .tooling import ToolRegistry
 

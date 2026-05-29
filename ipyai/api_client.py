@@ -1,7 +1,7 @@
 import json, warnings
 
 from litellm.types.utils import ModelResponse
-from lisette.core import (AsyncChat as LisetteAsyncChat, AsyncStreamFormatter as LisetteAsyncStreamFormatter,
+from fastllm.chat import (AsyncChat as FastLLMAsyncChat, AsyncStreamFormatter as FastLLMAsyncStreamFormatter,
     contents, mk_tr_details)
 
 from .backend_common import BaseBackend, ConversationSeed, compact_tool, seed_to_flat_history
@@ -9,7 +9,7 @@ from .lisette_compat import full_response_sentinel_text, is_full_response, strip
 
 
 class _BridgeNS(dict):
-    "Dict-shaped proxy so lisette's ns-based tool-call path routes through the ToolRegistry bridge. Pass-through — any `FullResponse` a tool returns survives, and plain-str results go through lisette's default truncation."
+    "Dict-shaped proxy so chat's ns-based tool-call path routes through the ToolRegistry bridge. Pass-through — any `FullResponse` a tool returns survives, and plain-str results go through chat's default truncation."
     def __init__(self, registry):
         super().__init__()
         self._reg = registry
@@ -30,8 +30,8 @@ class _BridgeNS(dict):
 warnings.filterwarnings("ignore", message="Pydantic serializer warnings", category=UserWarning)
 
 
-class AsyncStreamFormatter(LisetteAsyncStreamFormatter):
-    "Streams via lisette's formatter so `outp` keeps full lisette `<details>` tool blocks (round-trippable through `fmt2hist`), but emits a compact `🔧 ...` line per tool result for the live terminal display."
+class AsyncStreamFormatter(FastLLMAsyncStreamFormatter):
+    "Streams via fastllm's formatter so `outp` keeps full fastllm `<details>` tool blocks (round-trippable through `fmt2hist`), but emits a compact `🔧 ...` line per tool result for the live terminal display."
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.final_text = ""
@@ -63,7 +63,7 @@ class AsyncStreamFormatter(LisetteAsyncStreamFormatter):
         return self._emit(res)
 
 
-class _LisetteBackend(BaseBackend):
+class _FastLLMBackend(BaseBackend):
     formatter_cls = AsyncStreamFormatter
 
     def _make_chat(self, **kw): raise NotImplementedError
@@ -77,12 +77,12 @@ class _LisetteBackend(BaseBackend):
         return self.prepared_turn(stream, provider_session_id=provider_session_id)
 
 
-class ClaudeAPIBackend(_LisetteBackend):
-    def _make_chat(self, **kw): return LisetteAsyncChat(**kw, cache=True)
+class ClaudeAPIBackend(_FastLLMBackend):
+    def _make_chat(self, **kw): return FastLLMAsyncChat(**kw, cache=True)
 
 
-class CodexAPIBackend(_LisetteBackend):
-    "Codex API backend via lisette `AsyncChat` + chatgpt provider aliases (codex54/codex55 resolve to `chatgpt/gpt-5.x`). Short config names like 'gpt-5.4' are auto-prefixed with `chatgpt/` for backward compat."
+class CodexAPIBackend(_FastLLMBackend):
+    "Codex API backend via fastllm's codex vendor, using `~/.codex/auth.json`. Accepts short names like `gpt-5.4` or prefixed names like `codex/gpt-5.4`."
     def _make_chat(self, model, **kw):
-        if "/" not in model: model = f"chatgpt/{model}"
-        return LisetteAsyncChat(model=model, **kw)
+        if "/" in model: _,model = model.split("/", 1)
+        return FastLLMAsyncChat(model=model, vendor_name="codex", **kw)
