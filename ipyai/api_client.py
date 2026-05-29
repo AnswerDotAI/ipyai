@@ -5,6 +5,7 @@ from lisette.core import (AsyncChat as LisetteAsyncChat, AsyncStreamFormatter as
     contents, mk_tr_details)
 
 from .backend_common import BaseBackend, ConversationSeed, compact_tool, seed_to_flat_history
+from .lisette_compat import full_response_sentinel_text, is_full_response, strip_full_response_sentinel
 
 
 class _BridgeNS(dict):
@@ -40,6 +41,11 @@ class AsyncStreamFormatter(LisetteAsyncStreamFormatter):
         if text: self.display_text += text
         return text or ""
 
+    def _tool_result_for_outp(self, o):
+        content = o.get("content")
+        if is_full_response(content): return {**o, "content": full_response_sentinel_text(content)}
+        return o
+
     def format_item(self, o):
         if isinstance(o, ModelResponse):
             if tcs := getattr(contents(o), "tool_calls", None):
@@ -48,10 +54,10 @@ class AsyncStreamFormatter(LisetteAsyncStreamFormatter):
         if isinstance(o, dict) and "tool_call_id" in o:
             tc = self.tcs.pop(o["tool_call_id"], None)
             if tc is not None:
-                self.outp += mk_tr_details(o, tc, mx=self.mx)
+                self.outp += mk_tr_details(self._tool_result_for_outp(o), tc, mx=self.mx)
                 self.final_text = self.outp
                 args = json.loads(tc.function.arguments or "{}")
-                return self._emit(compact_tool(tc.function.name, args, o.get("content") or ""))
+                return self._emit(compact_tool(tc.function.name, args, strip_full_response_sentinel(o.get("content") or "")))
         res = super().format_item(o)
         self.final_text = self.outp
         return self._emit(res)
