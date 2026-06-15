@@ -14,7 +14,7 @@ from ipyai.tooling import ToolRegistry
 
 # ---- api_client (lisette formatter overrides) ----
 
-def _resp_with_tc(call_id="call_1", name="pyrun", arguments='{"code":"2+2"}'):
+def _resp_with_tc(call_id="call_1", name="python", arguments='{"code":"2+2"}'):
     msg = Message(role="assistant", content=None,
         tool_calls=[dict(id=call_id, type="function", function=dict(name=name, arguments=arguments))])
     return ModelResponse(choices=[Choices(message=msg, index=0, finish_reason="tool_calls")])
@@ -33,9 +33,9 @@ async def _run_api(items):
 
 def test_tool_call_truncates_long_param_values():
     "Long arg values must be truncated for display so the 🔧 line stays readable; short values render unchanged."
-    assert tool_call("pyrun", dict(code="1+1")) == "pyrun(code='1+1')"
+    assert tool_call("python", dict(code="1+1")) == "python(code='1+1')"
     long = "x" * 5000
-    rendered = tool_call("pyrun", dict(code=long))
+    rendered = tool_call("python", dict(code=long))
     assert long not in rendered, f"long arg must not appear verbatim: {rendered!r}"
     assert "…" in rendered or "..." in rendered, f"truncation marker expected: {rendered!r}"
     assert len(rendered) < 100, f"rendered tool_call must be short, got {len(rendered)} chars"
@@ -44,16 +44,16 @@ def test_tool_call_truncates_long_param_values():
 def test_compact_tool_truncates_args_in_display_summary():
     "compact_tool() feeds the 🔧 line; its args section must be truncated."
     long = "y" * 3000
-    summary = compact_tool("pyrun", dict(code=long), "ok")
+    summary = compact_tool("python", dict(code=long), "ok")
     assert long not in summary, f"full arg should not leak into compact_tool: {summary!r}"
-    assert "🔧 pyrun(" in summary
+    assert "🔧 python(" in summary
 
 
 def test_api_display_truncates_long_tool_args_but_outp_keeps_full():
     "In api_client display path the compact 🔧 line must show truncated args, while outp (LLM-facing) keeps the full args via mk_tr_details."
     long = "z" * 3000
     arguments = json.dumps({"code": long})
-    resp = _resp_with_tc(call_id="call_3", name="pyrun", arguments=arguments)
+    resp = _resp_with_tc(call_id="call_3", name="python", arguments=arguments)
     tool_msg = {"tool_call_id": "call_3", "content": "ok"}
     fmt,out = asyncio.run(_run_api([resp, tool_msg]))
     joined = "".join(out)
@@ -87,7 +87,7 @@ def test_api_tool_start_marker_suppressed_in_display_and_outp():
 def test_api_full_tool_result_preserved_in_outp_compact_in_display():
     "Tool result must live in full inside outp/final_text (for replay) while terminal display sees only the compact one-liner."
     long = "x" * 5000
-    resp = _resp_with_tc(call_id="call_1", name="pyrun", arguments='{"code":"big"}')
+    resp = _resp_with_tc(call_id="call_1", name="python", arguments='{"code":"big"}')
     tool_msg = {"tool_call_id": "call_1", "content": FullResponse(long)}
     fmt,out = asyncio.run(_run_api([resp, tool_msg]))
     joined = "".join(out)
@@ -96,7 +96,7 @@ def test_api_full_tool_result_preserved_in_outp_compact_in_display():
     assert fmt.final_text == fmt.outp
     assert tool_dtls_tag in fmt.outp, "outp must use lisette's <details> block format so fmt2hist can round-trip"
 
-    assert "🔧 pyrun(code='big')" in joined, f"display must show compact one-liner: {joined!r}"
+    assert "🔧 python(code='big')" in joined, f"display must show compact one-liner: {joined!r}"
     assert long not in joined, "display must NOT include the full tool result"
     assert long not in fmt.display_text
 
@@ -116,10 +116,10 @@ def test_api_outp_round_trips_via_fmt2hist_with_full_tool_content():
 
 def test_bridge_ns_does_not_wrap_plain_str_results():
     "BridgeNS must not force-wrap tool results; truncation should use lisette's per-tool opt-in."
-    ns = {"pyrun": lambda code: code}
+    ns = {"python": lambda code: code}
     reg = ToolRegistry.from_ns(ns)
     bns = _BridgeNS(reg)
-    caller = bns.get("pyrun")
+    caller = bns.get("python")
     res = asyncio.run(caller(code="z" * 5000))
     assert type(res) is str, f"plain-str tool return must stay plain str, got {type(res).__name__}"
 
@@ -169,25 +169,25 @@ def test_ai_title_stub_identifies_title_only_file(tmp_path):
 
 
 def test_claude_tool_name_strips_mcp_prefix():
-    assert claude._tool_name("mcp__ipy__pyrun") == "pyrun"
-    assert claude._tool_call("mcp__ipy__pyrun", dict(code="1+1")) == "pyrun(code='1+1')"
+    assert claude._tool_name("mcp__ipy_python") == "python"
+    assert claude._tool_call("mcp__ipy_python", dict(code="1+1")) == "python(code='1+1')"
 
 
 def test_claude_compact_tool_leaves_blank_line_after_summary():
-    assert claude._compact_tool("mcp__ipy__pyrun", dict(code="1+1"), "2") == "\n\n🔧 pyrun(code='1+1') => 2\n\n"
+    assert claude._compact_tool("mcp__ipy_python", dict(code="1+1"), "2") == "\n\n🔧 python(code='1+1') => 2\n\n"
 
 
 async def test_claude_async_stream_formatter_shows_live_tool_and_stores_compact_summary():
     fmt = claude.AsyncStreamFormatter()
     fmt.is_tty = True
     seen = []
-    done = dict(kind="tool_complete", name="mcp__ipy__pyrun", input=dict(code="1+1"), content="2")
-    stream = _aiter(dict(kind="tool_start", name="mcp__ipy__pyrun", input=dict(code="1+1")), done, "2")
+    done = dict(kind="tool_complete", name="mcp__ipy_python", input=dict(code="1+1"), content="2")
+    stream = _aiter(dict(kind="tool_start", name="mcp__ipy_python", input=dict(code="1+1")), done, "2")
 
     async for _ in fmt.format_stream(stream): seen.append(fmt.display_text)
 
-    assert seen[0] == "⌛ `pyrun(code='1+1')`"
-    assert "🔧 pyrun(code='1+1') => 2\n\n2" in fmt.final_text
+    assert seen[0] == "⌛ `python(code='1+1')`"
+    assert "🔧 python(code='1+1') => 2\n\n2" in fmt.final_text
     assert seen[-1].endswith("\n\n2")
 
 
@@ -208,25 +208,25 @@ class FakeCodexClient:
 
 
 def test_codex_tool_name_strips_mcp_prefix():
-    assert codex._tool_name("mcp__ipy__pyrun") == "pyrun"
-    assert codex._tool_call("mcp__ipy__pyrun", dict(code="1+1")) == "pyrun(code='1+1')"
+    assert codex._tool_name("mcp__ipy_python") == "python"
+    assert codex._tool_call("mcp__ipy_python", dict(code="1+1")) == "python(code='1+1')"
 
 
 def test_codex_compact_tool_leaves_blank_line_after_summary():
-    assert codex._compact_tool("mcp__ipy__pyrun", dict(code="1+1"), "2") == "\n\n🔧 pyrun(code='1+1') => 2\n\n"
+    assert codex._compact_tool("mcp__ipy_python", dict(code="1+1"), "2") == "\n\n🔧 python(code='1+1') => 2\n\n"
 
 
 async def test_codex_async_stream_formatter_shows_live_tool_and_stores_compact_summary():
     fmt = codex.AsyncStreamFormatter()
     fmt.is_tty = True
     seen = []
-    done = dict(kind="tool_complete", name="mcp__ipy__pyrun", input=dict(code="1+1"), content="2")
-    stream = _aiter(dict(kind="tool_start", name="mcp__ipy__pyrun", input=dict(code="1+1")), done, "2")
+    done = dict(kind="tool_complete", name="mcp__ipy_python", input=dict(code="1+1"), content="2")
+    stream = _aiter(dict(kind="tool_start", name="mcp__ipy_python", input=dict(code="1+1")), done, "2")
 
     async for _ in fmt.format_stream(stream): seen.append(fmt.display_text)
 
-    assert seen[0] == "⌛ `pyrun(code='1+1')`"
-    assert "🔧 pyrun(code='1+1') => 2\n\n2" in fmt.final_text
+    assert seen[0] == "⌛ `python(code='1+1')`"
+    assert "🔧 python(code='1+1') => 2\n\n2" in fmt.final_text
     assert seen[-1].endswith("\n\n2")
 
 
@@ -266,16 +266,16 @@ async def test_codex_consume_turn_emits_tool_start_and_complete_events():
     client.events = asyncio.Queue()
     thread_id,turn_id = "thread_1","turn_1"
     started = dict(method="item/started", params=dict(threadId=thread_id, turnId=turn_id,
-        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy__pyrun", arguments=dict(code="1+1"))))
+        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy_python", arguments=dict(code="1+1"))))
     done = dict(method="item/completed", params=dict(threadId=thread_id, turnId=turn_id,
-        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy__pyrun", arguments=dict(code="1+1"), contentItems=[dict(type="inputText", text="2")])))
+        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy_python", arguments=dict(code="1+1"), contentItems=[dict(type="inputText", text="2")])))
     msgs = [started, done, dict(method="turn/completed", params=dict(threadId=thread_id, turnId=turn_id, turn=dict(id=turn_id)))]
     for msg in msgs: await client.events.put(msg)
 
     chunks = [o async for o in client._consume_turn(thread_id, turn_id, {})]
 
-    assert chunks == [dict(kind="tool_start", name="mcp__ipy__pyrun", input=dict(code="1+1")),
-        dict(kind="tool_complete", name="mcp__ipy__pyrun", input=dict(code="1+1"), content="2")]
+    assert chunks == [dict(kind="tool_start", name="mcp__ipy_python", input=dict(code="1+1")),
+        dict(kind="tool_complete", name="mcp__ipy_python", input=dict(code="1+1"), content="2")]
 
 
 # ---- mcp_server (unix-socket RPC) ----
@@ -299,17 +299,17 @@ async def _with_server(ns, fn):
 
 
 def test_socket_list_tools():
-    ns = {"pyrun": RunPython(g={})}
+    ns = {"python": RunPython(g={})}
     resp = asyncio.run(_with_server(ns, lambda p: _rpc(p, "list_tools")))
     names = [o["name"] for o in resp["result"]]
-    assert "pyrun" in names
+    assert "python" in names
 
 
-def test_socket_call_tool_pyrun():
+def test_socket_call_toolpython():
     ns = {}
-    ns["pyrun"] = RunPython(g=ns)
+    ns["python"] = RunPython(g=ns)
     ns["hidden"] = "walnut"
-    resp = asyncio.run(_with_server(ns, lambda p: _rpc(p, "call_tool", dict(name="pyrun", args=dict(code="hidden")))))
+    resp = asyncio.run(_with_server(ns, lambda p: _rpc(p, "call_tool", dict(name="python", args=dict(code="hidden")))))
     assert resp["result"]["isError"] is False
     assert "walnut" in resp["result"]["content"][0]["text"]
 

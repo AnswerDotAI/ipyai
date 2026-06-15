@@ -8,17 +8,17 @@ from ipyai.tooling import ToolRegistry
 
 
 async def test_tool_registry_exposes_provider_shapes(shell):
-    def pyrun(code: str):
+    def python(code: str):
         "Execute code"
         return code
 
-    shell.user_ns["pyrun"] = pyrun
+    shell.user_ns["python"] = python
     reg = ToolRegistry.from_ns(shell.user_ns)
 
-    assert await reg.names() == ["pyrun"]
-    assert await reg.claude_allowed_tool_names() == ["mcp__ipy__pyrun"]
+    assert await reg.names() == ["python"]
+    assert await reg.claude_allowed_tool_names() == ["mcp__ipy_python"]
     tool = (await reg.codex_dynamic_tools())[0]
-    assert tool["name"] == "pyrun"
+    assert tool["name"] == "python"
     assert tool["description"] == "Execute code"
     assert tool["inputSchema"]["type"] == "object"
     assert tool["inputSchema"]["required"] == ["code"]

@@ -42,7 +42,7 @@ def test_attach_existing_kernel_without_shutdown():
             sb = KernelBridge(secondary)
 
             present = set(await sb.present_names(CUSTOM_TOOL_NAMES))
-            assert "pyrun" in present, "secondary client should see pyrun already present (from primary's bootstrap)"
+            assert "python" in present, "secondary client should see python already present (from primary's bootstrap)"
 
             val = await sb.read_var("hidden")
             assert val == "walnut"

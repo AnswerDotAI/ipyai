@@ -101,7 +101,7 @@ Prompt history is stored in SQLite; for compatibility, the table is currently na
 
 `ipyai` exposes the same custom tools across all backends:
 
-- `pyrun`: run Python in the live IPython namespace
+- `python`: run Python in the live IPython namespace
 - `bash`: run an allowed shell command via `safecmd`
 - `start_bgterm`: start a persistent shell session
 - `write_stdin`: send input to a persistent shell session and read output
@@ -119,9 +119,9 @@ When using the Claude CLI backend, it also enables these built-in Claude Code to
 - `WebSearch`
 - `Write`
 
-Custom tools are exposed to `claude -p` through an in-process unix-socket MCP server plus a small stdio bridge subprocess (`ipyai-mcp-bridge`), so the subscription-driven CLI can still call live-kernel tools like `pyrun`.
+Custom tools are exposed to `claude -p` through an in-process unix-socket MCP server plus a small stdio bridge subprocess (`ipyai-mcp-bridge`), so the subscription-driven CLI can still call live-kernel tools like `python`.
 
-The `ipyai` CLI loads `safepyrun` before `ipyai`, so `pyrun` is available by default in normal terminal use.
+The `ipyai` CLI loads `safepyrun` before `ipyai`, so `python` is available by default in normal terminal use.
 `bash`, `start_bgterm`, `write_stdin`, `close_bgterm`, `lnhashview_file`, and `exhash_file` are seeded into the user namespace by `ipyai`.
 
 ## Skills

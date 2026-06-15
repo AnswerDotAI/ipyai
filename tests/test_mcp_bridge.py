@@ -19,18 +19,18 @@ async def _bridge_roundtrip(ns):
                 await session.initialize()
                 listed = await session.list_tools()
                 names = [t.name for t in listed.tools]
-                called = await session.call_tool("pyrun", dict(code="hidden"))
+                called = await session.call_tool("python", dict(code="hidden"))
                 text = called.content[0].text if called.content else ""
                 return names, called.isError, text
     finally: await srv.stop()
 
 
-def test_bridge_lists_and_calls_pyrun():
+def test_bridge_lists_and_callspython():
     if shutil.which("ipyai-mcp-bridge") is None: pytest.skip("ipyai-mcp-bridge not installed")
     ns = {}
-    ns["pyrun"] = RunPython(g=ns)
+    ns["python"] = RunPython(g=ns)
     ns["hidden"] = "walnut"
     names,is_error,text = asyncio.run(_bridge_roundtrip(ns))
-    assert "pyrun" in names
+    assert "python" in names
     assert is_error is False
     assert "walnut" in text

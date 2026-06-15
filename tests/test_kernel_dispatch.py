@@ -2,7 +2,7 @@
 import asyncio
 
 
-def test_bridge_runs_pyrun_and_reads_vars(kernel_bridge, kernel_loop):
+def test_bridge_runspython_and_reads_vars(kernel_bridge, kernel_loop):
     loop = kernel_loop
 
     async def _go():
@@ -15,17 +15,17 @@ def test_bridge_runs_pyrun_and_reads_vars(kernel_bridge, kernel_loop):
         assert vals == {"x": 41, "y": 42}
 
         names = await kernel_bridge.available_names(force=True)
-        assert "pyrun" in names, f"pyrun missing from {names}"
+        assert "python" in names, f"python missing from {names}"
 
-        result = await kernel_bridge.call_tool("pyrun", dict(code="2 + 3"))
+        result = await kernel_bridge.call_tool("python", dict(code="2 + 3"))
         assert "5" in result
 
         bash_res = await kernel_bridge.call_tool("bash", dict(cmd="printf 'x\\n'", as_dict=True))
         assert "x" in bash_res, f"bool tool arg should be marshalled to Python True: {bash_res!r}"
 
         schemas = await kernel_bridge.schemas()
-        pyrun_schema = next(s for s in schemas if s["function"]["name"] == "pyrun")
-        assert "parameters" in pyrun_schema["function"]
+        python_schema = next(s for s in schemas if s["function"]["name"] == "python")
+        assert "parameters" in python_schema["function"]
 
     loop.run_until_complete(_go())
 

@@ -29,7 +29,7 @@ def test_spawn_bootstrap_skip_inject_shutdown():
 
             await bridge._exec(_BOOTSTRAP)
             present_after_bootstrap = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-            assert "pyrun" in present_after_bootstrap, "safepyrun extension should seed pyrun"
+            assert "python" in present_after_bootstrap, "safepyrun extension should seed python"
 
             await bridge._exec("def bash(**kw): return 'sentinel-preseeded'")
             present_with_preseed = set(await bridge.present_names(CUSTOM_TOOL_NAMES))

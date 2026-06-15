@@ -55,7 +55,7 @@ def test_app_initialize_wires_full_stack(tmp_path, monkeypatch):
             names = set(await app._bridge.available_names(force=True))
             return names
         names = asyncio.get_event_loop().run_until_complete(_check())
-        assert "pyrun" in names, f"pyrun missing from kernel ns: {names}"
+        assert "python" in names, f"python missing from kernel ns: {names}"
     finally:
         try: app._finalize_kernel()
         except Exception: pass

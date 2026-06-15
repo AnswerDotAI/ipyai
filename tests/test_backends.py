@@ -25,7 +25,7 @@ async def _run_once(shell_cls, tmp_path, backend_name, model, kernel_bridge, loo
         bridge=kernel_bridge, db=db1, session_number=sess1)
     ctrl.load()
 
-    await ctrl.run_prompt("Use the `pyrun` tool to evaluate `hidden`. Reply with the returned lowercase word only. Keep the response to one word.")
+    await ctrl.run_prompt("Use the `python` tool to evaluate `hidden`. Reply with the returned lowercase word only. Keep the response to one word.")
 
     first = shell.user_ns[LAST_RESPONSE].strip().lower()
     assert re.search(r"\bwalnut\b", first)

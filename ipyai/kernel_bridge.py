@@ -3,7 +3,7 @@ import ast, asyncio, json
 from queue import Empty
 
 
-CUSTOM_TOOL_NAMES = ("pyrun", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
+CUSTOM_TOOL_NAMES = ("python", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
 _INJECT_IMPORTS = dict(bash="from safecmd import bash", start_bgterm="from bgterm import start_bgterm",
     write_stdin="from bgterm import write_stdin", close_bgterm="from bgterm import close_bgterm",
     lnhashview_file="from exhash import lnhashview_file", exhash_file="from exhash import exhash_file",
@@ -78,7 +78,7 @@ class KernelBridge:
         return list(exprs.get("_r") or [])
 
     async def inject_tools(self, skip=()):
-        "Import the custom tool names (other than pyrun, which must come from an extension)."
+        "Import the custom tool names (other than python, which must come from an extension)."
         skip = set(skip)
         stmts = [_INJECT_IMPORTS[n] for n in CUSTOM_TOOL_NAMES if n in _INJECT_IMPORTS and n not in skip]
         for stmt in stmts:

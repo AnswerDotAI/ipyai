@@ -44,7 +44,7 @@ The user may give you:
 Treat `<note>` blocks as user-authored context, not executable code.
 
 Use tools when they materially improve correctness:
-- use live Python tooling such as `pyrun` when interpreter state matters
+- use live Python tooling such as `python` when interpreter state matters
 - use available shell/file tools for repository work
 - use web tools when fresh web context matters
 

@@ -101,10 +101,10 @@ There is no implicit `startup.ipynb` behavior.
 The custom tool story is intentionally small:
 
 - shared custom tools across all backends:
-  `pyrun`, `bash`, `start_bgterm`, `write_stdin`, `close_bgterm`, `lnhashview_file`, `exhash_file`
+  `python`, `bash`, `start_bgterm`, `write_stdin`, `close_bgterm`, `lnhashview_file`, `exhash_file`
 - built-ins: `Bash`, `Edit`, `Read`, `Skill`, `WebFetch`, `WebSearch`, `Write`
 
-`pyrun` does not call back into `InteractiveShell.run_cell*`. It delegates to `safepyrun`, looked up in `shell.user_ns`, matching the old `ipycodex` direct-call boundary and avoiding nested IPython cell execution.
+`python` does not call back into `InteractiveShell.run_cell*`. It delegates to `safepyrun`, looked up in `shell.user_ns`, matching the old `ipycodex` direct-call boundary and avoiding nested IPython cell execution.
 
 Provider-specific tool exposure now fans out from the shared `ToolRegistry`:
 
@@ -112,7 +112,7 @@ Provider-specific tool exposure now fans out from the shared `ToolRegistry`:
 - Claude API and Codex API: OpenAI-style function schemas through `lisette`
 - Codex: app-server `dynamicTools`
 
-The `ipyai` CLI loads `safepyrun` before `ipyai`, so normal terminal sessions get `pyrun` automatically. `ipyai` seeds the other custom tools into `shell.user_ns` directly.
+The `ipyai` CLI loads `safepyrun` before `ipyai`, so normal terminal sessions get `python` automatically. `ipyai` seeds the other custom tools into `shell.user_ns` directly.
 
 ### Skills
 
