@@ -126,7 +126,7 @@ class ClaudeBackend(BaseBackend):
         for d in self.ctx.plugin_dirs: args += ["--plugin-dir", d]
         if allow_tools:
             allowed = [*BUILTIN_TOOLS, *allowed_tool_names]
-            args += ["--tools", ",".join(allowed), "--allowed-tools", *allowed]
+            args += ["--tools", ",".join(BUILTIN_TOOLS), "--allowed-tools", *allowed]
             if sock_path: args += ["--mcp-config", json.dumps(self._mcp_config(sock_path))]
         else: args += ["--tools", ""]
         return args

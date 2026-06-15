@@ -169,20 +169,30 @@ def test_ai_title_stub_identifies_title_only_file(tmp_path):
 
 
 def test_claude_tool_name_strips_mcp_prefix():
-    assert claude._tool_name("mcp__ipy_python") == "python"
-    assert claude._tool_call("mcp__ipy_python", dict(code="1+1")) == "python(code='1+1')"
+    assert claude._tool_name("mcp__ipy__python") == "python"
+    assert claude._tool_call("mcp__ipy__python", dict(code="1+1")) == "python(code='1+1')"
 
 
 def test_claude_compact_tool_leaves_blank_line_after_summary():
-    assert claude._compact_tool("mcp__ipy_python", dict(code="1+1"), "2") == "\n\n🔧 python(code='1+1') => 2\n\n"
+    assert claude._compact_tool("mcp__ipy__python", dict(code="1+1"), "2") == "\n\n🔧 python(code='1+1') => 2\n\n"
+
+
+def test_claude_cli_tools_flag_only_contains_builtin_tools(shell):
+    backend = claude.ClaudeBackend(shell=shell)
+    args = backend._cli_args(session_id="sess", use_resume=False, model="sonnet", think="m", allow_tools=True,
+        sock_path="/tmp/ipy.sock", allowed_tool_names=["mcp__ipy__python"])
+
+    assert args[args.index("--tools") + 1] == ",".join(claude.BUILTIN_TOOLS)
+    allowed = args[args.index("--allowed-tools") + 1:args.index("--mcp-config")]
+    assert allowed == [*claude.BUILTIN_TOOLS, "mcp__ipy__python"]
 
 
 async def test_claude_async_stream_formatter_shows_live_tool_and_stores_compact_summary():
     fmt = claude.AsyncStreamFormatter()
     fmt.is_tty = True
     seen = []
-    done = dict(kind="tool_complete", name="mcp__ipy_python", input=dict(code="1+1"), content="2")
-    stream = _aiter(dict(kind="tool_start", name="mcp__ipy_python", input=dict(code="1+1")), done, "2")
+    done = dict(kind="tool_complete", name="mcp__ipy__python", input=dict(code="1+1"), content="2")
+    stream = _aiter(dict(kind="tool_start", name="mcp__ipy__python", input=dict(code="1+1")), done, "2")
 
     async for _ in fmt.format_stream(stream): seen.append(fmt.display_text)
 
@@ -208,20 +218,20 @@ class FakeCodexClient:
 
 
 def test_codex_tool_name_strips_mcp_prefix():
-    assert codex._tool_name("mcp__ipy_python") == "python"
-    assert codex._tool_call("mcp__ipy_python", dict(code="1+1")) == "python(code='1+1')"
+    assert codex._tool_name("mcp__ipy__python") == "python"
+    assert codex._tool_call("mcp__ipy__python", dict(code="1+1")) == "python(code='1+1')"
 
 
 def test_codex_compact_tool_leaves_blank_line_after_summary():
-    assert codex._compact_tool("mcp__ipy_python", dict(code="1+1"), "2") == "\n\n🔧 python(code='1+1') => 2\n\n"
+    assert codex._compact_tool("mcp__ipy__python", dict(code="1+1"), "2") == "\n\n🔧 python(code='1+1') => 2\n\n"
 
 
 async def test_codex_async_stream_formatter_shows_live_tool_and_stores_compact_summary():
     fmt = codex.AsyncStreamFormatter()
     fmt.is_tty = True
     seen = []
-    done = dict(kind="tool_complete", name="mcp__ipy_python", input=dict(code="1+1"), content="2")
-    stream = _aiter(dict(kind="tool_start", name="mcp__ipy_python", input=dict(code="1+1")), done, "2")
+    done = dict(kind="tool_complete", name="mcp__ipy__python", input=dict(code="1+1"), content="2")
+    stream = _aiter(dict(kind="tool_start", name="mcp__ipy__python", input=dict(code="1+1")), done, "2")
 
     async for _ in fmt.format_stream(stream): seen.append(fmt.display_text)
 
@@ -266,16 +276,16 @@ async def test_codex_consume_turn_emits_tool_start_and_complete_events():
     client.events = asyncio.Queue()
     thread_id,turn_id = "thread_1","turn_1"
     started = dict(method="item/started", params=dict(threadId=thread_id, turnId=turn_id,
-        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy_python", arguments=dict(code="1+1"))))
+        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy__python", arguments=dict(code="1+1"))))
     done = dict(method="item/completed", params=dict(threadId=thread_id, turnId=turn_id,
-        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy_python", arguments=dict(code="1+1"), contentItems=[dict(type="inputText", text="2")])))
+        item=dict(type="dynamicToolCall", id="tool_1", tool="mcp__ipy__python", arguments=dict(code="1+1"), contentItems=[dict(type="inputText", text="2")])))
     msgs = [started, done, dict(method="turn/completed", params=dict(threadId=thread_id, turnId=turn_id, turn=dict(id=turn_id)))]
     for msg in msgs: await client.events.put(msg)
 
     chunks = [o async for o in client._consume_turn(thread_id, turn_id, {})]
 
-    assert chunks == [dict(kind="tool_start", name="mcp__ipy_python", input=dict(code="1+1")),
-        dict(kind="tool_complete", name="mcp__ipy_python", input=dict(code="1+1"), content="2")]
+    assert chunks == [dict(kind="tool_start", name="mcp__ipy__python", input=dict(code="1+1")),
+        dict(kind="tool_complete", name="mcp__ipy__python", input=dict(code="1+1"), content="2")]
 
 
 # ---- mcp_server (unix-socket RPC) ----
