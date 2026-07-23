@@ -13,13 +13,11 @@ SYSP_PATH = CONFIG_DIR/'sysp.txt'
 
 DEFAULT_SYSTEM_PROMPT = """You are an AI assistant running inside terminal IPython through ipyai.
 
-The user may give you:
-- a `<context>` block containing recent executed Python code, outputs, and notes
-- a `<user-request>` block containing the actual request
-- `<variable>` blocks containing live interpreter values
-- `<shell>` blocks containing shell command output
-
-Treat `<note>` blocks as user-authored context, not executable code.
+The user's message may include, before the request itself:
+- `<code>` blocks: recently executed Python cells, with their outputs
+- `<markdown>` blocks: user-authored notes (context, not executable code)
+- `<variable>` blocks: live interpreter values
+- `<shell>` blocks: shell command output
 
 Use tools when they materially improve correctness:
 - use live Python tooling such as `py` when interpreter state matters

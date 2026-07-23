@@ -1,5 +1,5 @@
 "The ipyai terminal app: teleprint UI over a Jupyter kernel, with the assistant riding the block model."
-import asyncio, base64, math, os, re, signal, time
+import asyncio, base64, math, os, pyghostty, re, signal, time
 from kittytgp import render_parts, kitty_probe, kitty_supported, kitty_env_hint
 from rich.text import Text
 from rich.cells import cell_len
@@ -9,6 +9,7 @@ from teleprint.compositor import Compositor
 from teleprint.tty import RealTty
 from teleprint.widgets import CompletionMenu, Tooltip, Signature
 from teleprint.transcript import TranscriptView
+from teleprint.jobs import spawn_job, finish_job, relay_job, watch_job
 from fastcore.ansi import strip_ansi
 from .sig import call_context, parse_sig_text, active_param
 from .kernel import KernelSession
@@ -19,6 +20,13 @@ from .reply import TurnRenderer
 
 HINT = 'ipyai ng -- Enter runs; Tab completes; shift-Tab inspects; ctrl-T transcript; alt-p prompt mode; ctrl-D quits'
 OSC_BG_RE = re.compile(rb'\x1b\]11;rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)')
+
+def _fmt_tok(n):
+    "Token counts as compact k/M strings, the way context meters read."
+    if n >= 1e6: return f'{n / 1e6:.1f}M'.replace('.0M', 'M')
+    if n >= 1000: return f'{n / 1000:.1f}k'.replace('.0k', 'k')
+    return str(n)
+
 
 GUTTERS = {'in': ('>>> ', '... ', 'bold green'), 'out': ('« ', '  ', 'bright_blue'),
            'result': ('« ', '  ', 'bright_blue'), 'error': ('« ', '  ', 'red'), 'image': ('« ', '  ', 'magenta'),
@@ -67,6 +75,12 @@ class App:
         self.ai_sugg = None      # (text, cursor, suggestion): an Alt-. completion, valid while the buffer is unchanged
         self.cell_outputs = None # raw (msg_type, content) records of the running cell, for context + persistence
         self._cycle = dict(idx=-1, resp='')  # alt-shift-up/down cycling over the last reply's fenced blocks
+        self.jobs = {}           # stopped/background jobs by number, as (job, mirror) pairs
+        self._njob = 0
+        self.fg_job = None       # (job, mirror) while a fg job borrows the terminal (SIGWINCH forwards here)
+        self._reaps = []         # bg reaps arriving during a borrow, deferred until the screen is ours again
+        self._ipyai_comm = None  # the kernel-side %ipyai comm id, set on comm_open
+        self.k.on_comm = self._on_comm
         self.comp.on_key = self.on_key
         self.comp.on_paste = lambda text: (self.buf.insert(text), self.paint())
         self.tv = TranscriptView(self.comp, self._tail_content)
@@ -86,7 +100,11 @@ class App:
         if self.k.busy: return 'running... (ctrl-C interrupts)'
         if self.ai_task is not None and not self.ai_task.done():
             return f"{self.assistant.model} responding... (ctrl-C stops)"
-        return HINT + (' -- PROMPT MODE (alt-p exits)' if self.prompt_mode else '')
+        s = HINT + (' -- PROMPT MODE (alt-p exits)' if self.prompt_mode else '')
+        if self.assistant is not None and (ctx := self.assistant.ctx_usage):
+            used, mx = ctx
+            s += f' -- ctx {_fmt_tok(used)}/{_fmt_tok(mx)} ({100 * used // mx}%)'
+        return s
 
     def _tail_content(self):
         "Tail layout: dim status above the prompt (a shell's context-line shape), popups (menu/tooltip) below it."
@@ -194,11 +212,99 @@ class App:
             self.cell_outputs = None
             self.paint()
 
+    async def _kernel_cwd(self):
+        "The kernel's cwd, queried per spawn: bare-`!` jobs and kernel-side `!` should agree on where they run."
+        try: return await self.k.kc.eval_expr("__import__('os').getcwd()")
+        except Exception: return os.getcwd()
+
+    def _job_note(self, s): self.comp.print_block(Text(s, style='dim'), gutter=_gutter('out'), tag='out')
+
+    def _add_job(self, job, mirror):
+        self._njob += 1
+        self.jobs[self._njob] = (job, mirror)
+        return self._njob
+
+    async def run_job(self, cmd):
+        "A routed 'job' line: `%fg [n]` resumes, a trailing `&` spawns in the background, else foreground."
+        if cmd.split()[:1] == ['%fg']: return await self.fg_job_resume(cmd.split()[1:])
+        bg = cmd.endswith('&')
+        if bg: cmd = cmd[:-1].rstrip()  # sh must never see the &, or the job backgrounds itself out of the relay's pty
+        mirror = pyghostty.Terminal(*self.tty.size)
+        job = spawn_job(cmd, size=self.tty.size, cwd=await self._kernel_cwd())
+        if not bg: return await self._run_fg(job, mirror)
+        n = self._add_job(job, mirror)
+        self._job_note(f'[{n}] {job.pgid}')
+        job.watcher = asyncio.ensure_future(watch_job(job, mirror, on_exit=lambda j, r: self._on_bg_exit(n, r)))
+
+    async def _run_fg(self, job, mirror):
+        """The borrow: release the transcript, hand the job the real tty raw, shuttle bytes (teeing
+        into the mirror), reanchor. The mirror's contents become the model-only residue block --
+        the bytes are already on glass, so the screen never repeats them."""
+        loop, fd = asyncio.get_running_loop(), getattr(self.tty, 'fd', None)
+        reading = fd is not None and loop.remove_reader(fd)
+        self.comp.release()
+        self.tty.raw()
+        self.fg_job = (job, mirror)
+        try: res = await relay_job(job, self.tty.write, mirror=mirror, in_fd=fd)
+        finally:
+            self.fg_job = None
+            self.tty.cooked()
+            self.comp.reanchor()
+            if reading: loop.add_reader(fd, self._read_tty)
+        if res == 'stopped': self._job_note(f'[{self._add_job(job, mirror)}] stopped: {job.cmd}  (%fg resumes)')
+        else: self._end_job(job, mirror, record=True)
+        for f in self._reaps: f()
+        self._reaps.clear()
+
+    def _end_job(self, job, mirror, record):
+        "Reap, and give the mirror's residue to the transcript: model-only for fg, printed for bg."
+        ec = finish_job(job)
+        resid = mirror.contents().rstrip()
+        mirror.close()
+        add = self.comp.record_block if record else self.comp.print_block
+        if resid: add(resid, gutter=_gutter('out'), tag='out', collapse_at=self.collapse_at)
+        if ec: self.comp.print_block(Text(f'exit {ec}' if ec > 0 else f'signal {-ec}', style='red'), gutter=_gutter('error'), tag='error')
+        if self.assistant is not None:
+            outs = [('stream', dict(name='stdout', text=resid + '\n'))] if resid else []
+            if ec: outs.append(('stream', dict(name='stderr', text=f'[exit {ec}]\n')))
+            self.assistant.add_cell(f'!{job.cmd}', outs)
+
+    def _on_bg_exit(self, n, res):
+        "watch_job's callback; while a fg job owns the screen the reap defers until reanchor."
+        def reap():
+            job, mirror = self.jobs[n]
+            if res == 'stopped': self._job_note(f'[{n}] stopped: {job.cmd}  (%fg {n} resumes)')
+            else:
+                del self.jobs[n]
+                self._job_note(f'[{n}] done: {job.cmd}')
+                self._end_job(job, mirror, record=False)
+            self.paint()
+        if self.fg_job is not None: self._reaps.append(reap)
+        else: reap()
+
+    async def fg_job_resume(self, args):
+        "%fg [n]: bring a stopped or background job to the foreground (highest job number when unnumbered)."
+        if not self.jobs: return self._job_note('%fg: no jobs')
+        try: n = int(args[0]) if args else max(self.jobs)
+        except ValueError: return self._job_note(f'%fg: bad job number {args[0]!r}')
+        if n not in self.jobs: return self._job_note(f'%fg: no such job [{n}]')
+        job, mirror = self.jobs.pop(n)
+        w = getattr(job, 'watcher', None)
+        if w is not None and not w.done():
+            w.cancel()  # a still-running bg job: take over its relay
+            await asyncio.gather(w, return_exceptions=True)
+        job.resize(*self.tty.size)
+        mirror.resize(*self.tty.size)
+        if job.state == 'stopped': job.cont()
+        await self._run_fg(job, mirror)
+
     async def attach_assistant(self, resume=None):
         "Wire the AI side to the live kernel: bridge + tools, persistence into the kernel's own history db, optional resume."
         from .bridge import setup_tools
         from .store import Store
         bridge, tools = await setup_tools(self.k.kc)
+        try: await bridge._exec("get_ipython().extension_manager.load_extension('ipyai.magic')")
+        except Exception: pass  # kernel without ipyai installed: %ipyai just won't exist there
         if self.assistant is None: self.assistant = Assistant(cfg=self.cfg or None)
         self.assistant.tools, self.assistant.bridge = tools, bridge
         try:
@@ -207,20 +313,75 @@ class App:
         except Exception: pass
         if resume is not None and self.assistant.store is not None: self.load_session(resume)
 
+    def _on_comm(self, mt, c):
+        "%ipyai lands here (via KernelSession.on_comm): track the comm, ack each command by request id."
+        if mt == 'comm_open' and c.get('target_name') == 'ipyai': self._ipyai_comm = c.get('comm_id')
+        elif mt == 'comm_close' and c.get('comm_id') == self._ipyai_comm: self._ipyai_comm = None
+        elif mt == 'comm_msg' and c.get('comm_id') == self._ipyai_comm:
+            d = c.get('data', {})
+            try: reply = dict(req=d.get('req'), text=self._ipyai_cmd(list(d.get('cmd') or [])))
+            except Exception as e: reply = dict(req=d.get('req'), error=str(e))
+            self.k.kc.shell_request('comm_msg', reply=False, comm_id=self._ipyai_comm, data=reply)
+
+    def _ipyai_cmd(self, args):
+        "One %ipyai command against app/assistant state; returns the ack text. Settings are session-only."
+        a = self.assistant
+        if a is None: raise RuntimeError('no assistant attached (plain-REPL mode)')
+        if not args:
+            s = [f"backend = {a.cfg.get('_backend_name')}"]
+            s += [f'{k} = {getattr(a, k)}' for k in ('model', 'completion_model', 'think')]
+            s += [f'code_theme = {self.theme}', f'prompt mode {"on" if self.prompt_mode else "off"}', '',
+                  'commands: model | completion_model | think | code_theme [VALUE], prompt, sessions']
+            return '\n'.join(s)
+        cmd, *rest = args
+        if cmd in ('model', 'completion_model', 'think'):
+            if rest: setattr(a, cmd, rest[0])
+            return f'{cmd} = {getattr(a, cmd)}'
+        if cmd == 'code_theme':
+            if rest: self.theme = self.detect_theme() if rest[0] == 'auto' else rest[0]
+            return f'code_theme = {self.theme}'
+        if cmd == 'prompt':
+            self.prompt_mode = not self.prompt_mode
+            self.paint()
+            return f'prompt mode {"on" if self.prompt_mode else "off"}'
+        if cmd == 'sessions':
+            if a.store is None: raise RuntimeError('no session store attached')
+            return _sessions_text(a.store.sessions(cwd=os.getcwd()))
+        raise ValueError(f'unknown %ipyai command: {cmd!r} (bare %ipyai lists commands)')
+
     def _replay_output(self, o):
         "Render one stored nbformat output: the dict shapes match iopub content, so on_out replays them directly."
         ot = o.get('output_type')
         if ot in ('stream', 'display_data', 'execute_result', 'error'): self.on_out(ot, o)
 
+    def _replay_reply(self, response):
+        "Render a stored reply through the same block machinery: fmt2hist recovers text and tool parts."
+        from fastllm.chat import fmt2hist
+        tr = TurnRenderer(self.comp, _gutter, theme=self.theme, collapse_at=self.collapse_at)
+        try: msgs = fmt2hist(response)
+        except Exception: msgs = None
+        if not msgs:
+            tr.md.feed(response)
+            tr.done()
+            return
+        for m in msgs:
+            for p in m.content:
+                if getattr(p, 'type', None) is None: continue
+                if p.type.name == 'text' and p.text and m.role == 'assistant':
+                    t = '\n'.join(l for l in p.text.splitlines() if not (l.startswith('- ⏳') and l.endswith('⏳')))
+                    if t.strip(): tr.md.feed(t)
+                elif p.type.name in ('tool_use', 'tool_result'): tr.event(p)
+        tr.done()
+
     def load_session(self, session):
-        "Resume: print a past session's blocks from the store and seed the conversation to continue it (no kernel state is rebuilt)."
-        from .backend_common import PromptTurn, thinking_to_blockquote
+        "Resume: print a past session's blocks from the store and rebuild the session Dialog to continue it (no kernel state is rebuilt)."
+        from aidialog.dialog import prompt_output
         st = self.assistant.store
         events = st.load_session(session)
         if not events:
             self.comp.print_block(Text(f'session {session}: nothing stored', style='dim'), gutter=_gutter('error'), tag='error')
             return
-        last_prompt_line = 0
+        a = self.assistant
         for ev in events:
             if ev['kind'] == 'cell':
                 self.comp.print_block(_hl(ev['source'], self.theme), gutter=_gutter('in'), tag='in')
@@ -228,19 +389,13 @@ class App:
                 self.cell_imgs = set()
                 for o in ev['outputs']: self._replay_output(o)
                 self.stream = None
-                self.assistant.cells.append(dict(source=ev['source'],
-                    outputs=[(o.get('output_type'), o) for o in ev['outputs']], line=ev['line']))
+                a.dlg.mk_message(ev['source'], msg_type='code', output=ev['outputs'])
+                a.n_cells += 1
             else:
                 self.comp.print_block(Text(ev['prompt']), gutter=_gutter('ask'), tag='ask')
-                tr = TurnRenderer(self.comp, _gutter, theme=self.theme, collapse_at=self.collapse_at)
-                tr.md.feed(thinking_to_blockquote(ev['response']))
-                tr.done()
-                last_prompt_line = ev['line']
-        sid, backend, turns = st.resume_state(session)
-        self.assistant.turns = [PromptTurn(prompt=p, full_prompt=f, response=r, history_line=0) for p, f, r in turns]
-        self.assistant._ctx_cells = sum(1 for ev in events if ev['kind'] == 'cell' and ev['line'] <= last_prompt_line)
-        if backend == self.assistant.cfg.get('_backend_name'): self.assistant.provider_session_id = sid
-        if turns: self.assistant.last_response = turns[-1][2]
+                self._replay_reply(ev['response'])
+                a.dlg.mk_message(ev['prompt'], msg_type='prompt', output=prompt_output(ev['response']))
+                a.last_response = ev['response']
 
     async def do_complete(self):
         matches, start = await self.k.complete(self.buf.text, self.buf.cursor)
@@ -294,6 +449,13 @@ class App:
         if kind == 'prompt':
             self._submit(text)
             await self.run_prompt(payload)
+            self.paint()
+            return
+        if kind == 'job':
+            self._submit(text, text)
+            try: await self.run_job(payload)
+            except Exception as e:
+                self.comp.print_block(Text(f'job failed: {type(e).__name__}: {e}', style='red'), gutter=_gutter('error'), tag='error')
             self.paint()
             return
         status, indent = await self.k.check(payload)
@@ -428,12 +590,19 @@ class App:
             self.ai_sugg = None
             self.paint()
 
+    def _read_tty(self): self.comp.on_bytes(os.read(self.tty.fd, 4096))
+
     async def run(self):
         "The real-terminal main loop: tty reader, signal handlers, escape-timeout ticker."
         loop = asyncio.get_running_loop()
-        loop.add_reader(self.tty.fd, lambda: self.comp.on_bytes(os.read(self.tty.fd, 4096)))
+        loop.add_reader(self.tty.fd, self._read_tty)
         loop.add_signal_handler(signal.SIGINT, self.on_sigint)
         def resized():
+            if self.fg_job is not None:
+                job, mirror = self.fg_job
+                job.resize(*self.tty.size)
+                mirror.resize(*self.tty.size)
+                return  # the job owns the screen; the compositor adopts the new size at reanchor
             if self.tv.active: self.tv.leave()  # a rewrap invalidates the view; re-enter is one keystroke
             self.comp.resize()
             self.paint()
@@ -455,23 +624,26 @@ def _parse_args(argv=None):
     import argparse
     p = argparse.ArgumentParser(prog='ipyai', description='IPython + AI on the teleprint transcript')
     p.add_argument('-p', '--prompt-mode', action='store_true', help='start in prompt mode')
-    p.add_argument('-b', '--backend', default=None, help='backend: codex-api | codex | claude-cli | claude-api')
+    p.add_argument('-b', '--backend', default=None, help='backend: codex | claude | claude-api')
     p.add_argument('-r', '--resume', type=int, default=None, help='resume ipyai session N (see --sessions)')
     p.add_argument('--sessions', action='store_true', help='list past ipyai sessions for this directory and exit')
     return p.parse_args(argv)
+
+def _sessions_text(rows):
+    "Past-session rows as the table %ipyai sessions and --sessions both show."
+    rows = [r for r in rows if r[0] >= 0]
+    if not rows: return 'No ipyai sessions found for this directory.'
+    lines = [f"{'ID':>6}  {'Backend':10}  {'Prompts':>7}  Last prompt"]
+    for sid, _, backend, n, last in rows:
+        lp = (last or '').replace('\n', ' ')[:60]
+        lines.append(f'{sid:>6}  {backend or "":10}  {n:>7}  {lp}')
+    return '\n'.join(lines)
 
 def _list_sessions(cwd):
     "Print past ipyai sessions from the shared history db (no kernel needed: the path is IPython's default)."
     from .history import hist_path
     from .store import Store
-    st = Store(hist_path())
-    rows = st.sessions(cwd=cwd)
-    if not rows: return print('No ipyai sessions found for this directory.')
-    print(f"{'ID':>6}  {'Backend':10}  {'Prompts':>7}  Last prompt")
-    for sid, _, backend, n, last in rows:
-        if sid < 0: continue
-        lp = (last or '').replace('\n', ' ')[:60]
-        print(f'{sid:>6}  {backend or "":10}  {n:>7}  {lp}')
+    print(_sessions_text(Store(hist_path()).sessions(cwd=cwd)))
 
 async def _amain(a):
     cfg = load_config(backend_name=a.backend)

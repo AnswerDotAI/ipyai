@@ -6,10 +6,10 @@ from ipyai.kernel import KernelSession
 from ipyai.bridge import setup_tools
 from ipyai.store import Store, nbformat_outputs
 from ipyai.assistant import Assistant, LAST_RESPONSE
-from tests.test_assistant import mk_cfg, FakeBackend
+from tests.test_assistant import mk_cfg, FakeChatFactory
 
 def test_bridge_and_writeback():
-    "Silent kernel-side exec: the python tool runs live code, set_vars lands LAST_RESPONSE for the user."
+    "Silent kernel-side exec: the py tool runs live code, set_vars lands LAST_RESPONSE for the user."
     async def go():
         async with KernelSession() as k:
             bridge, tools = await setup_tools(k.kc)
@@ -30,40 +30,48 @@ def test_bridge_and_writeback():
 
 def test_store_roundtrip(tmp_path):
     db = tmp_path/'hist.sqlite'
-    st = Store(db, 7, cwd='/tmp/x', backend='codex-api')
+    st = Store(db, 7, cwd='/tmp/x', backend='codex')
     st.save_cell(1, 'x = 1', [('stream', {'name': 'stdout', 'text': 'hi\n'}),
                               ('execute_result', {'data': {'text/plain': '1'}, 'metadata': {}, 'execution_count': 1})])
-    st.save_prompt('why?', '<user-request>why?</user-request>', 'Because.', 1, provider_session_id='ps-1')
+    st.save_prompt('why?', 'why?', 'Because.', 1)
     st.save_cell(2, 'y = 2', [('error', {'ename': 'E', 'evalue': 'boom', 'traceback': ['tb']})])
     evs = st.load_session(7)
     assert [e['kind'] for e in evs] == ['cell', 'prompt', 'cell']
     assert evs[0]['outputs'][0] == dict(output_type='stream', name='stdout', text='hi\n')
     assert evs[1]['response'] == 'Because.'
-    sid, backend, turns = st.resume_state(7)
-    assert sid == 'ps-1' and backend == 'codex-api' and turns == [('why?', '<user-request>why?</user-request>', 'Because.')]
     rows = st.sessions(cwd='/tmp/x')
     assert rows and rows[0][0] == 7 and rows[0][3] == 1
     assert st.sessions(cwd='/nowhere') == []
     st.close()
 
 def test_resume_into_app(tmp_path):
-    "Resume prints the stored session as blocks and seeds the conversation to continue it."
+    "Resume prints the stored session as blocks and rebuilds the Dialog to continue it."
     async def go():
         db = tmp_path/'hist.sqlite'
-        st = Store(db, 3, cwd='.', backend='codex-api')
+        st = Store(db, 3, cwd='.', backend='codex')
         st.save_cell(1, 'x = 41', [('execute_result', {'data': {'text/plain': '41'}, 'metadata': {}, 'execution_count': 1})])
-        st.save_prompt('add one', '<user-request>add one</user-request>', 'Use `x + 1`:\n\n```python\nx + 1\n```\n', 1, 'ps-9')
+        st.save_prompt('add one', 'add one', 'Use `x + 1`:\n\n```python\nx + 1\n```\n', 1)
         tty = FakeTty(60, 18)
-        app = App(tty, history=None, assistant=Assistant(cfg=mk_cfg(), backend=FakeBackend(['later']), system_prompt='sp'))
+        fake = FakeChatFactory([dict(text='later')])
+        app = App(tty, history=None, assistant=Assistant(cfg=mk_cfg(), chat_factory=fake, system_prompt='sp'))
         app.assistant.store = st
         app.paint()
         app.load_session(3)
         scr = tty.term.text()
         assert '>>> x = 41' in scr and 'add one' in scr and 'x + 1' in scr
         a = app.assistant
-        assert len(a.turns) == 1 and a.provider_session_id == 'ps-9'
+        assert [m.msg_type for m in a.dlg.messages] == ['code', 'prompt']
+        assert a.dlg.messages[-1].ai_output.startswith('Use `x + 1`')
         assert a.last_response.startswith('Use `x + 1`')
-        assert a._ctx_cells == 1  # the resumed cell rides in the seed turn, not the next context
         app.comp.on_bytes(b'\x1bW')  # paste bindings work over the resumed reply
         assert app.buf.text == 'x + 1'
+        # continuing the conversation carries the resumed history
+        app.buf.clear()
+        app.comp.on_bytes(b'.and now?\r')
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if fake.calls: break
+        call = fake.calls[0]
+        assert len(call['hist']) == 2 and call['hist'][1].startswith('Use `x + 1`')
+        assert 'x = 41' in '\n'.join(p for p in call['hist'][0] if isinstance(p, str))
     asyncio.run(go())

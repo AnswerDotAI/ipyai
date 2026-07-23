@@ -1,9 +1,8 @@
-import asyncio, os, sqlite3, tempfile
-from types import SimpleNamespace
+import asyncio, os, tempfile
 
 import pytest
 
-import ipyai.core as core
+import ipyai.config as config
 from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
 
 
@@ -22,95 +21,15 @@ def pytest_unconfigure(config):
     if _IPYTHONDIR_SESSION: shutil.rmtree(_IPYTHONDIR_SESSION, ignore_errors=True)
 
 
-def _make_test_db():
-    "Create an isolated sqlite DB shaped like IPython's history.sqlite plus our claude_prompts table, for DummyShell-based tests."
-    db = sqlite3.connect(":memory:")
-    with db:
-        db.execute("CREATE TABLE sessions (session INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "start TIMESTAMP DEFAULT CURRENT_TIMESTAMP, end TIMESTAMP, num_cmds INTEGER DEFAULT 0, remark TEXT)")
-        db.execute("CREATE TABLE history (session INTEGER, line INTEGER, source TEXT, source_raw TEXT, PRIMARY KEY (session, line))")
-        db.execute(core._PROMPTS_SQL)
-    return db
-
-
-class DummyDisplayPublisher:
-    def __init__(self): self._is_publishing = False
-
-
-class DummyInputTransformerManager:
-    def __init__(self): self.cleanup_transforms = []
-
-
-class DummyHistory:
-    "Minimal client-side history stand-in used by DummyShell tests."
-    def __init__(self, session_number=1):
-        self.session_number = session_number
-        self.entries = {}
-        self.input_hist_parsed = [""]
-        self.input_hist_raw = [""]
-
-    def add(self, line, source, output=None): self.entries[line] = (source, output)
-
-    def get_range(self, session=0, start=1, stop=None, raw=True, output=False):
-        if stop is None: stop = max(self.entries, default=0) + 1
-        for i in range(start, stop):
-            if i not in self.entries: continue
-            src,out = self.entries[i]
-            yield (0, i, (src, out) if output else src)
-
-
-class DummyShell:
-    "In-process stand-in for IPyAIShell used by unit tests that don't need a real kernel."
-    def __init__(self):
-        self.input_transformer_manager = DummyInputTransformerManager()
-        self.user_ns = {}
-        self.magics = []
-        self.history_manager = DummyHistory()
-        self.display_pub = DummyDisplayPublisher()
-        self.execution_count = 1
-        self.ran_cells = []
-        self.output_buffer = {}
-        self.prompts = SimpleNamespace(in_prompt_tokens=lambda: [])
-
-    def register_magics(self, magics): self.magics.append(magics)
-    def set_custom_exc(self, *args): pass
-
-    def run_cell(self, source, store_history=False):
-        self.ran_cells.append((source, store_history))
-        try: exec(compile(source, f"<cell-{self.execution_count}>", "exec"), self.user_ns)
-        except Exception as e: return SimpleNamespace(success=False, error_in_exec=e, result=None)
-        if store_history:
-            self.history_manager.add(self.execution_count, source)
-            self.execution_count += 1
-        return SimpleNamespace(success=True, result=None, error_in_exec=None, error_before_exec=None)
-
-    async def run_cell_async(self, source, store_history=False, transformed_cell=None):
-        return self.run_cell(transformed_cell or source, store_history=store_history)
-
-
 @pytest.fixture(autouse=True)
-def temp_core_paths(tmp_path, monkeypatch):
+def temp_config_paths(tmp_path, monkeypatch):
+    "Isolate config/sysp so tests never read or write the user's real XDG ipyai config."
     cfg = tmp_path/"config"
     cfg.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(core, "CONFIG_DIR", cfg)
-    monkeypatch.setattr(core, "CONFIG_PATH", cfg/"config.json")
-    monkeypatch.setattr(core, "SYSP_PATH", cfg/"sysp.txt")
-    monkeypatch.setattr(core, "LOG_PATH", cfg/"exact-log.jsonl")
+    monkeypatch.setattr(config, "CONFIG_DIR", cfg)
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg/"config.json")
+    monkeypatch.setattr(config, "SYSP_PATH", cfg/"sysp.txt")
     yield
-
-
-@pytest.fixture
-def shell(): return DummyShell()
-
-
-@pytest.fixture
-def test_db():
-    "Isolated in-memory sqlite shaped like the shared history DB."
-    db = _make_test_db()
-    # Pre-allocate session 1 so IPyAIController has something to reference.
-    with db: db.execute("INSERT INTO sessions (session) VALUES (1)")
-    yield db
-    db.close()
 
 
 _KERNEL_BOOTSTRAP = ("from IPython import get_ipython\n"

@@ -11,7 +11,17 @@ collapsed-by-default blocks, and a fresh partial follows."""
 import mdhtml
 from rich.text import Text
 from .mdrich import md_blocks
-from .backend_common import tool_call
+from fastllm.types import Part, PartType
+
+def _trunc(v, mx=40):
+    s = v if isinstance(v, str) else repr(v)
+    s = s.replace('\n', '\\n')
+    return s if len(s) <= mx else s[:mx-1] + '…'
+
+def tool_call(name, args, mx=40):
+    "Compact `name(k=v, ...)` line for a tool call, values truncated for one-line display."
+    if not args: return f'{name}()'
+    return f"{name}({', '.join(f'{k}={_trunc(v, mx)}' for k, v in sorted(args.items()))})"
 
 class Grower:
     "A live block re-rendered whole per update, folding at `collapse_at` as it grows."
@@ -131,35 +141,30 @@ class TurnRenderer:
             self.tool = None
 
     def event(self, e):
-        "Dispatch one raw backend stream event (str or dict)."
+        """Dispatch one fastllm stream item: dicts carry text/thinking deltas, `Part`s carry
+        tool calls and results, and anything else (Completion, ModelResponse) is bookkeeping.
+        Plain strs also feed the markdown flow, for replays and tests."""
+        if isinstance(e, Part):
+            call = tool_call((e.data or {}).get('name') or 'tool', (e.data or {}).get('arguments') or {})
+            if e.type == PartType.tool_use: self._tool_open(call)
+            elif e.type == PartType.tool_result:
+                if self.tool is None: self._tool_open(call)
+                self._tool_update(result=str(e.text or ' '))
+            return
         if isinstance(e, str):
             if e:
                 self._close_think()
                 self.md.feed(e)
             return
         if not isinstance(e, dict): return
-        kind = e.get('kind')
-        if kind == 'thinking_start':
-            self.md.flush()
-            self.think = (Grower(self.comp, self.gutters('think'), 'think', collapse_at=self.collapse_at), '')
-        elif kind == 'thinking_delta':
+        if thk := e.get('thinking'):
             if self.think is None:
+                self.md.flush()
                 self.think = (Grower(self.comp, self.gutters('think'), 'think', collapse_at=self.collapse_at), '')
             g, acc = self.think
-            acc += e.get('delta', '')
+            acc += thk
             if acc.strip(): g.update(Text(acc.strip(), style='dim italic'))
             self.think = (g, acc)
-        elif kind == 'thinking_end': self._close_think()
-        elif kind == 'tool_start': self._tool_open(tool_call(e.get('name') or 'tool', e.get('input') or {}))
-        elif kind == 'tool_complete':
-            if self.tool is None: self._tool_open(tool_call(e.get('name') or 'tool', e.get('input') or {}))
-            self._tool_update(result=e.get('content') or ' ', error=bool(e.get('is_error')))
-        elif kind == 'command_start': self._tool_open(e.get('command') or 'command')
-        elif kind == 'command_delta': self._tool_update(delta=e.get('delta', ''))
-        elif kind == 'command_complete':
-            if self.tool is None: self._tool_open(e.get('command') or 'command')
-            ec = e.get('exit_code')
-            self._tool_update(result=(e.get('output') or self.tool[2] or ' '), error=ec not in (None, 0))
         elif text := e.get('text'):
             self._close_think()
             self.md.feed(text)

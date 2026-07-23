@@ -61,15 +61,6 @@ class ToolRegistry:
         if self._schemas_cache is None: self._schemas_cache = await self.bridge.schemas()
         return self._schemas_cache
 
-    async def codex_dynamic_tools(self):
-        schemas = await self.openai_schemas()
-        return [dict(name=o["function"]["name"], description=o["function"].get("description") or "",
-            inputSchema=o["function"].get("parameters") or dict(type="object")) for o in schemas]
-
-    async def claude_allowed_tool_names(self, prefix="mcp__ipy__"):
-        names = await self.names()
-        return [f"{prefix}{o}" for o in names]
-
     async def call_text(self, name, args=None):
         res = await self.bridge.call_tool(name, args or {})
         return _result_text(res)

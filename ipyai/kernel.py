@@ -6,6 +6,7 @@ from jupyter_client.kernelspec import KernelSpec
 
 DEFAULT_KERNEL = 'ipymini'
 OUTPUT_MSGS = ('stream', 'display_data', 'execute_result', 'error')
+COMM_MSGS = ('comm_open', 'comm_msg', 'comm_close')
 
 class ModuleKernelManager(ConKernelManager):
     "Launches `python -m <module> -f <connection_file>`, so no kernelspec install is needed"
@@ -18,6 +19,7 @@ class KernelSession:
     "One kernel and client; incremental iopub for UIs (messages surface as they arrive, not drained at completion)."
     def __init__(self, module=DEFAULT_KERNEL):
         self.module, self.km, self.kc, self.busy = module, None, None, False
+        self.on_comm = None  # host-side comm handler: (msg_type, content) for COMM_MSGS seen on iopub
 
     async def start(self):
         self.km = ModuleKernelManager(module=self.module)
@@ -43,6 +45,7 @@ class KernelSession:
                 mt, c = msg['msg_type'], msg['content']
                 if mt == 'status' and c.get('execution_state') == 'idle': idle = True
                 elif mt in OUTPUT_MSGS: on_output(mt, c)
+                elif mt in COMM_MSGS and self.on_comm is not None: self.on_comm(mt, c)
         finally: self.busy = False
 
     async def complete(self, code, pos):

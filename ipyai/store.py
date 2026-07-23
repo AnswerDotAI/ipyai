@@ -23,8 +23,7 @@ _SCHEMA = ["""CREATE TABLE IF NOT EXISTS ipyai_prompts (
 """CREATE TABLE IF NOT EXISTS ipyai_sessions (
     session INTEGER PRIMARY KEY,
     cwd TEXT,
-    backend TEXT,
-    provider_session_id TEXT)"""]
+    backend TEXT)"""]
 
 def nbformat_outputs(outputs):
     "Raw iopub (msg_type, content) records as an nbformat outputs array."
@@ -47,18 +46,16 @@ class Store:
         self.session = session
         for stmt in _SCHEMA: self.con.execute(stmt)
         if session is not None:
-            self.con.execute('INSERT OR REPLACE INTO ipyai_sessions (session, cwd, backend, provider_session_id) VALUES (?, ?, ?, ?)',
-                             (session, cwd, backend, None))
+            self.con.execute('INSERT OR REPLACE INTO ipyai_sessions (session, cwd, backend) VALUES (?, ?, ?)',
+                             (session, cwd, backend))
 
     def save_cell(self, line, source, outputs):
         self.con.execute('INSERT OR REPLACE INTO ipyai_cells (session, line, source, outputs) VALUES (?, ?, ?, ?)',
                          (self.session, line, source, json.dumps(nbformat_outputs(outputs), ensure_ascii=False)))
 
-    def save_prompt(self, prompt, full_prompt, response, line, provider_session_id=None):
+    def save_prompt(self, prompt, full_prompt, response, line):
         self.con.execute('INSERT INTO ipyai_prompts (session, line, prompt, full_prompt, response) VALUES (?, ?, ?, ?, ?)',
                          (self.session, line, prompt, full_prompt, response))
-        if provider_session_id:
-            self.con.execute('UPDATE ipyai_sessions SET provider_session_id=? WHERE session=?', (provider_session_id, self.session))
 
     def load_session(self, session):
         "A past session's events, oldest first: dicts of kind 'cell' (source, outputs) or 'prompt' (prompt, response)."
@@ -75,12 +72,5 @@ class Store:
                {} GROUP BY s.session ORDER BY s.session DESC'''
         if cwd is not None: return list(self.con.execute(q.format('WHERE s.cwd = ?'), (cwd,)))
         return list(self.con.execute(q.format('')))
-
-    def resume_state(self, session):
-        "The turns and provider session of a past session, for seeding a continued conversation."
-        row = self.con.execute('SELECT provider_session_id, backend FROM ipyai_sessions WHERE session=?', (session,)).fetchone()
-        turns = [(p, f, r) for _, p, f, r in
-                 self.con.execute('SELECT line, prompt, full_prompt, response FROM ipyai_prompts WHERE session=? ORDER BY id', (session,))]
-        return (row[0] if row else None), (row[1] if row else None), turns
 
     def close(self): self.con.close()

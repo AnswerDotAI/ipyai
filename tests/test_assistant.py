@@ -1,41 +1,57 @@
-"cp3: routing, streaming reply rendering, the assistant end-to-end over a FakeBackend, paste bindings, ghost text."
+"cp3/cp4: routing, streaming reply rendering, the assistant end-to-end over a FakeChat, paste bindings, ghost text."
 import asyncio
 from rich.text import Text
+from fastllm.types import Part, PartType
 from teleprint.testing import FakeTty
 from ipyai.cli import App, _gutter
 from ipyai.reply import TurnRenderer
 from ipyai.assistant import Assistant, route, code_blocks
-from ipyai.backend_common import PreparedTurn, CommonStreamFormatter, TextResponse
 
 def mk_cfg(**kw):
-    return dict(_backend_name='codex-api', model='m', completion_model='cm', think='l',
+    return dict(_backend_name='codex', model='m', completion_model='cm', think='l',
                 code_theme='ansi_dark', prompt_mode=False) | kw
 
-class FakeBackend:
-    "Scripted stream events in place of a live LLM; records every prepare_turn call for assertions."
-    formatter_cls = CommonStreamFormatter
-    def __init__(self, events=(), completion='', gate=None):
-        self.events, self.completion, self.gate = list(events), completion, gate
-        self.calls = []
+def tool_use(name, args, id='t1'): return Part(type=PartType.tool_use, data=dict(id=id, name=name, arguments=args, server=False))
+def tool_result(name, args, text, id='t1'): return Part(type=PartType.tool_result, text=text, data=dict(id=id, name=name, arguments=args, server=False))
 
-    async def prepare_turn(self, *, prompt, model, think='l', provider_session_id=None, seed=None, tool_mode='on', ephemeral=False):
-        self.calls.append(dict(prompt=prompt, seed=seed, model=model, provider_session_id=provider_session_id))
-        events, gate = self.events, self.gate
+class FakeChat:
+    """Stands in for one fastllm AsyncChat: `await chat(msg, stream=True, ...)` yields the scripted
+    items. The factory instance records every construction and call for assertions."""
+    def __init__(self, factory, **kw):
+        self.factory, self.kw = factory, kw
+        self.use = None
+
+    async def __call__(self, msg=None, stream=False, **call_kw):
+        self.factory.calls.append(dict(self.kw, msg=msg, **call_kw))
+        events, gate = self.factory.events, self.factory.gate
+        if self.kw.get('model') == 'cm': events = [dict(text=self.factory.completion)]
         async def gen():
             for e in events:
                 await asyncio.sleep(0)
                 yield e
             if gate is not None: await gate.wait()
-        return PreparedTurn(stream=gen(), _state={'provider_session_id': 'fake-123'})
+        return gen()
 
-    async def complete(self, prompt, *, model): return TextResponse(self.completion)
+class FakeChatFactory:
+    "Injected as Assistant's chat_factory; scripts the turn stream and the completion model's reply."
+    def __init__(self, events=(), completion='', gate=None):
+        self.events, self.completion, self.gate = list(events), completion, gate
+        self.calls = []
+
+    def __call__(self, **kw): return FakeChat(self, **kw)
 
 def mk_app(events=(), completion='', gate=None, prompt_mode=False):
     tty = FakeTty(64, 16)
-    fake = FakeBackend(events, completion, gate)
-    app = App(tty, history=None, assistant=Assistant(cfg=mk_cfg(), backend=fake, system_prompt='sp'))
+    fake = FakeChatFactory(events, completion, gate)
+    app = App(tty, history=None, assistant=Assistant(cfg=mk_cfg(), chat_factory=fake, system_prompt='sp'))
     app.prompt_mode = prompt_mode
     return tty, app, fake
+
+def _parts_text(call):
+    "All str content sent for the turn: prompt parts plus str history entries."
+    msg = call['msg']
+    parts = msg if isinstance(msg, list) else [msg]
+    return '\n'.join(p for p in parts if isinstance(p, str))
 
 def test_route():
     assert route('x = 1', False) == ('code', 'x = 1')
@@ -43,7 +59,7 @@ def test_route():
     assert route('what is x?', True) == ('prompt', 'what is x?')
     assert route(';x = 1', True) == ('code', 'x = 1')
     assert route('  ;x = 1', True) == ('code', '  x = 1')
-    assert route('!ls', True) == ('code', '!ls')
+    assert route('!ls', True) == ('job', 'ls')
     assert route('%time 1', True) == ('code', '%time 1')
     assert route('.still a prompt', True) == ('prompt', '.still a prompt')
 
@@ -54,7 +70,7 @@ def test_streaming_reply_blocks():
     app.paint()
     tr = TurnRenderer(app.comp, _gutter, collapse_at=5)
     for chunk in ['# He', 'ading\n\npara ', 'text\n\n```python\nx ', '= 1\nprint(x)\n```\n\ntail']:
-        tr.event(chunk)
+        tr.event(dict(text=chunk))
     tr.done()
     scr = tty.term.contents()
     for s in ('# Heading', 'para text', 'x = 1', 'print(x)', 'tail'):
@@ -78,26 +94,25 @@ def test_tall_fence_folds():
     assert '… (+' in tty.term.text()
 
 def test_turn_events_interleave():
+    "fastllm items: thinking dicts stream dim then fold, tool Parts print collapsed, text resumes the md flow."
     tty = FakeTty(60, 16)
     app = App(tty, history=None)
     app.paint()
     tr = TurnRenderer(app.comp, _gutter, collapse_at=5)
-    for e in [{'kind': 'thinking_start'}, {'kind': 'thinking_delta', 'delta': 'hmm\nlines\nof thought'},
-              {'kind': 'thinking_end'}, 'Check the value.\n\n',
-              {'kind': 'tool_start', 'name': 'python', 'input': {'code': 'x*2'}},
-              {'kind': 'tool_complete', 'name': 'python', 'input': {'code': 'x*2'}, 'content': '42'},
-              'The answer is 42.']:
+    for e in [dict(thinking='hmm\nlines'), dict(thinking='\nof thought'), dict(text='Check the value.\n\n'),
+              tool_use('py', {'code': 'x*2'}), tool_result('py', {'code': 'x*2'}, '42'),
+              dict(text='The answer is 42.')]:
         tr.event(e)
     tr.done()
     kinds = [(b.tag, b.collapsed) for b in app.comp.blocks.values()]
     assert kinds == [('think', True), ('ai', False), ('tool', True), ('ai', False)]
     scr = tty.term.text()
-    assert "python(code='x*2')" in scr and '42' not in scr.split('answer')[0]  # result folded away
+    assert "py(code=x*2)" in scr and '42' not in scr.split('answer')[0]  # result folded away
 
 def test_prompt_flow_and_context():
-    "The routed prompt flow: ask block, reply blocks, turn recorded, context carries the cell record."
+    "The routed prompt flow: ask block, reply blocks, dialog records the turn, context rides via dlg2hist."
     async def go():
-        tty, app, fake = mk_app(events=['The answer.\n'])
+        tty, app, fake = mk_app(events=[dict(text='The answer.\n')])
         app.paint()
         app.assistant.add_cell('x = 41 + 1', [('stream', {'name': 'stdout', 'text': ''})])
         app.comp.on_bytes(b'.what is x?\r')
@@ -107,26 +122,47 @@ def test_prompt_flow_and_context():
         assert [b.tag for b in app.comp.blocks.values()][:2] == ['ask', 'ai']
         scr = tty.term.text()
         assert 'what is x?' in scr and 'The answer.' in scr
-        full = fake.calls[0]['prompt']
-        assert '<code>x = 41 + 1</code>' in full and '<user-request>what is x?</user-request>' in full
+        call = fake.calls[0]
+        assert call['model'] == 'm' and call['think'] == 'l'
+        sent = _parts_text(call)
+        assert 'x = 41 + 1' in sent          # the cell rides in the prompt's user parts (dlg2hist)
+        assert call['msg'][-1] == 'what is x?'
         a = app.assistant
-        assert len(a.turns) == 1 and a.turns[0].response == 'The answer.\n'
-        assert a.provider_session_id == 'fake-123'
-        assert a.last_response == 'The answer.\n'
-        # second turn: seed carries the first, context resets past it
+        assert [m.msg_type for m in a.dlg.messages] == ['code', 'prompt']
+        assert a.last_response == 'The answer.'
+        assert a.dlg.messages[-1].ai_output == 'The answer.'
+        # second turn: history carries turn one; the cell does not repeat in the new prompt parts
         app.comp.on_bytes(b'.and again?\r')
         for _ in range(100):
             await asyncio.sleep(0.02)
             if len(fake.calls) == 2: break
-        seed = fake.calls[1]['seed']
-        assert len(seed.turns) == 1 and seed.turns[0].prompt == 'what is x?'
-        assert '<code>' not in fake.calls[1]['prompt']  # the cell already rode in turn one
+        call2 = fake.calls[1]
+        assert len(call2['hist']) == 2 and 'The answer.' in call2['hist'][1]
+        assert 'x = 41 + 1' in '\n'.join(p for p in call2['hist'][0] if isinstance(p, str))
+        assert 'x = 41 + 1' not in _parts_text(call2)
+    asyncio.run(go())
+
+def test_reply_stored_in_fastllm_form():
+    "The formatter tee stores the canonical form: a tool round-trip lands as a details block in last_response."
+    async def go():
+        tty, app, fake = mk_app(events=[dict(text='Look:\n'), tool_use('py', {'code': '1+1'}),
+                                        tool_result('py', {'code': '1+1'}, '2'), dict(text='Done.')])
+        app.paint()
+        app.comp.on_bytes(b'.check\r')
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if not app.busy and fake.calls: break
+        resp = app.assistant.last_response
+        assert "tool-usage-details" in resp and 'Done.' in resp
+        from fastllm.chat import fmt2hist
+        msgs = fmt2hist(resp)   # the stored form round-trips
+        assert any(p.type == PartType.tool_result for m in msgs for p in m.content)
     asyncio.run(go())
 
 def test_interrupt_freezes_turn():
     async def go():
         gate = asyncio.Event()
-        tty, app, fake = mk_app(events=['partial text so far'], gate=gate)
+        tty, app, fake = mk_app(events=[dict(text='partial text so far')], gate=gate)
         app.paint()
         app.comp.on_bytes(b'.go\r')
         for _ in range(100):
@@ -138,8 +174,24 @@ def test_interrupt_freezes_turn():
             await asyncio.sleep(0.02)
             if not app.busy: break
         assert 'interrupted' in tty.term.text()
-        assert app.assistant.turns[0].response.endswith('<system>user interrupted</system>')
+        assert app.assistant.last_response.endswith('*[Response interrupted]*')
+        assert app.assistant.dlg.messages[-1].msg_type == 'prompt'   # the interrupted turn still records
         gate.set()
+    asyncio.run(go())
+
+def test_failed_turn_leaves_no_orphan_prompt():
+    "A backend error must not leave a pending prompt message poisoning the next dlg2hist."
+    async def go():
+        tty, app, fake = mk_app()
+        def boom(**kw): raise RuntimeError('no backend')
+        app.assistant._chat_factory = boom
+        app.paint()
+        app.comp.on_bytes(b'.hi\r')
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if not app.busy: break
+        assert 'AI prompt failed' in tty.term.text()
+        assert [m.msg_type for m in app.assistant.dlg.messages] == []
     asyncio.run(go())
 
 def test_paste_bindings():
@@ -170,21 +222,36 @@ def test_ai_ghost_text():
             if app.ai_sugg: break
         assert app.ai_sugg[2] == '(reverse=True)'
         assert '(reverse=True)' in tty.term.text()
+        assert fake.calls[-1]['model'] == 'cm'
         app.comp.on_bytes(b'(')              # document changed: the suggestion is stale and gone
         assert app.buf.suggestion == ''
     asyncio.run(go())
 
 def test_prompt_mode_ui():
     async def go():
-        tty, app, fake = mk_app(events=['ok'], prompt_mode=True)
+        tty, app, fake = mk_app(events=[dict(text='ok')], prompt_mode=True)
         app.paint()
         assert tty.term.text().splitlines()[-1].startswith('ai>')  # the mode shows in the marker (trailing space trimmed by text())
         app.comp.on_bytes(b'hello there\r')  # plain Enter submits: English is never incomplete
         for _ in range(100):
             await asyncio.sleep(0.02)
             if fake.calls: break
-        assert '<user-request>hello there</user-request>' in fake.calls[0]['prompt']
+        assert fake.calls[0]['msg'][-1] == 'hello there'
         app.comp.on_bytes(b'\x1bp')          # alt-p back to code mode
         assert not app.prompt_mode
         assert tty.term.text().splitlines()[-1].startswith('>>>')
     asyncio.run(go())
+
+def test_ctx_usage_status():
+    "The context meter: the final request's size over the model window, painted into the dim status line."
+    from fastllm.chat import UsageStats
+    from ipyai.cli import _fmt_tok
+    assert (_fmt_tok(950), _fmt_tok(34_200), _fmt_tok(1_000_000)) == ('950', '34.2k', '1M')
+    tty, app, fake = mk_app()
+    a = app.assistant
+    assert a.ctx_usage is None                 # unknown model ('m'): no meter
+    a.model = 'gpt-5.5'
+    assert a.ctx_usage is None                 # known model but no turn yet: still no meter
+    a.last_req_use = UsageStats(prompt_tokens=30000, completion_tokens=2000)
+    assert a.ctx_usage == (32000, 256000)
+    assert app._status().endswith('ctx 32k/256k (12%)')
