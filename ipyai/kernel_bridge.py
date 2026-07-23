@@ -3,7 +3,9 @@ import ast, asyncio, json
 from queue import Empty
 
 
-CUSTOM_TOOL_NAMES = ("python", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
+# `py` is the ipyaing kernel tool (the solveit name; codex reserves `python` model-side); `python` remains
+# discoverable for legacy kernels where the safepyrun extension seeds it. Only one is ever defined at a time.
+CUSTOM_TOOL_NAMES = ("py", "python", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
 _INJECT_IMPORTS = dict(bash="from safecmd import bash", start_bgterm="from bgterm import start_bgterm",
     write_stdin="from bgterm import write_stdin", close_bgterm="from bgterm import close_bgterm",
     lnhashview_file="from exhash import lnhashview_file", exhash_file="from exhash import exhash_file",

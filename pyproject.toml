@@ -10,13 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [{name = "Jeremy Howard", email = "info@answer.ai"}]
-dependencies = ["fastcore>=1.12.31", "ipython>=9", "jupyter_client>=8", "jupyter_console>=6.6", "ipykernel>=6.29", "rich", "mistletoe", "ipythonng", "mcp", "safepyrun", "lisette>=0.1.20",
+dependencies = ["fastcore>=1.12.31", "ipython>=9", "jupyter_client>=8", "teleprint", "conkernelclient", "ipymini", "rich", "mistletoe", "ipythonng", "mcp", "safepyrun", "lisette>=0.1.20",
     "safecmd", "pyskills", "toolslm"]
 
 [project.scripts]
 ipyai = "ipyai.cli:main"
-ipyclaude = "ipyai.cli:main_claude"
-ipycodex = "ipyai.cli:main_codex"
 ipyai-mcp-bridge = "ipyai.mcp_bridge:main"
 
 [project.urls]

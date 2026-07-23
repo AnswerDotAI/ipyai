@@ -5,7 +5,6 @@ from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_client.manager import KernelManager
 
 from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
-from ipyai.shell import IPyAIHistory
 
 
 _BOOTSTRAP_EXTS = ("from IPython import get_ipython\n"
