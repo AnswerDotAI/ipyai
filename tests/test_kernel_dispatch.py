@@ -48,7 +48,7 @@ def test_call_tool_uses_longer_timeout_than_probe_exec(kernel_bridge, kernel_loo
 def test_exec_serializes_concurrent_requests(kernel_loop):
     import ipyai.kernel_bridge as kb
 
-    class FakeClient:
+    class StubClient:
         def __init__(self):
             self.shell_q = asyncio.Queue()
             self.iopub_q = asyncio.Queue()
@@ -78,7 +78,7 @@ def test_exec_serializes_concurrent_requests(kernel_loop):
         async def get_iopub_msg(self): return await self.iopub_q.get()
 
     async def _go():
-        client = FakeClient()
+        client = StubClient()
         bridge = kb.KernelBridge(client)
         await asyncio.gather(bridge._exec(""), bridge._exec(""))
         assert client.max_inflight == 1, f"_exec calls must serialize on the shared kernel channels: {client.max_inflight=}"
@@ -145,3 +145,26 @@ def test_iopub_buffer_captures_stream_and_display(session_kernel):
     joined = "".join(captured.values())
     assert "hello ipyai" in joined
     assert "10" in joined
+
+def test_run_ignores_foreign_iopub():
+    "iopub is a shared broadcast: a stray idle/output from an out-of-band execute (the cwd sync) must not end run() early or paint."
+    from ipyai.kernel import KernelSession
+    class StubKC:
+        def __init__(self): self.q = asyncio.Queue()
+        def execute(self, code, reply=True, timeout=None, msg_id=None):
+            async def _reply():
+                for m in [dict(msg_type='status', parent_header=dict(msg_id='foreign'), content=dict(execution_state='idle')),
+                          dict(msg_type='execute_result', parent_header=dict(msg_id='foreign'), content=dict(data={'text/plain': 'FOREIGN'})),
+                          dict(msg_type='execute_result', parent_header=dict(msg_id=msg_id), content=dict(data={'text/plain': 'MINE'})),
+                          dict(msg_type='status', parent_header=dict(msg_id=msg_id), content=dict(execution_state='idle'))]:
+                    await self.q.put(m)
+                return dict(content=dict(status='ok'))
+            return _reply()
+        async def get_iopub_msg(self, timeout=1): return await self.q.get()
+    class StubKM:
+        async def is_alive(self): return True
+    ks = KernelSession()
+    ks.kc, ks.km = StubKC(), StubKM()
+    outs = []
+    asyncio.run(ks.run('x', lambda mt, c: outs.append(c['data']['text/plain'])))
+    assert outs == ['MINE']   # the foreign output never painted, and the foreign idle did not end the loop

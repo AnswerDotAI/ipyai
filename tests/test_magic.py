@@ -1,11 +1,11 @@
 "The %ipyai magic end-to-end: kernel-side async magic -> comm -> host app dispatch -> ack as cell output."
 import asyncio
-from teleprint.testing import FakeTty
+from teleprint.testing import EmuTty
 from ipyai.cli import App
 from ipyai.assistant import Assistant
 
 def mk_cfg(**kw):
-    return dict(_backend_name='codex', model='m', completion_model='cm', think='l',
+    return dict(model='m', suggest_model='cm', think='l',
                 code_theme='ansi_dark', prompt_mode=False) | kw
 
 async def _settle(app, pred, timeout=25):
@@ -16,7 +16,7 @@ async def _settle(app, pred, timeout=25):
     raise TimeoutError('kernel run did not settle')
 
 def _mk_app():
-    tty = FakeTty(70, 24)
+    tty = EmuTty(70, 24)
     return tty, App(tty, history=None, assistant=Assistant(cfg=mk_cfg()))
 
 def test_ipyai_magic_e2e():
@@ -27,19 +27,21 @@ def test_ipyai_magic_e2e():
             app.paint()
             await app.k.run('%load_ext ipyai.magic', lambda *a: None)  # what attach_assistant execs
             app.comp.on_bytes(b'%ipyai\r')
-            await _settle(app, lambda: 'completion_model = cm' in tty.term.contents())
-            assert 'backend = codex' in tty.term.contents()
+            await _settle(app, lambda: 'suggest_model = cm' in tty.term.contents())
+            assert 'think = l' in tty.term.contents()
             app.comp.on_bytes(b'%ipyai model sonnet\r')
-            await _settle(app, lambda: 'model = sonnet' in tty.term.contents())
-            assert app.assistant.model == 'sonnet'
+            await _settle(app, lambda: app.assistant.model == 'sonnet')  # the setter applied through the round-trip
             app.comp.on_bytes(b'%ipyai think\r')  # getter form: no value shows the current one
             await _settle(app, lambda: 'think = l' in tty.term.contents())
             assert app.assistant.think == 'l'
             app.comp.on_bytes(b'%ipyai prompt\r')
-            await _settle(app, lambda: app.prompt_mode)
-            assert 'prompt mode on' in tty.term.contents()
+            await _settle(app, lambda: app.mode == 'prompt')
             app.comp.on_bytes(b'%ipyai prompt\r')  # % lines still reach the kernel in prompt mode
-            await _settle(app, lambda: not app.prompt_mode)
+            await _settle(app, lambda: app.mode == 'code')
+            app.assistant.dlg.mk_message('x = 1', msg_type='code')
+            app.comp.on_bytes(b'%ipyai reset\r')  # kernel side runs history_manager.new_session() for real
+            await _settle(app, lambda: 'x = 1' not in str(app.assistant.dlg.messages))  # reset swapped in a fresh dialog
+            assert len(app.assistant.dlg) == 0  # and the reset command itself was not recorded
             app.comp.on_bytes(b'%ipyai nonsense\r')
             await _settle(app, lambda: 'unknown %ipyai command' in tty.term.contents())
             assert app.assistant.model == 'sonnet'  # the failed command changed nothing

@@ -2,6 +2,12 @@
 
 <!-- do not remove -->
 
+## 0.0.10
+
+### Breaking Changes
+
+- Rename the `completion_model` config and `%ipyai` setting to `suggest_model`; existing `config.json` files must update that key.
+
 ## 0.0.9
 
 ### New Features

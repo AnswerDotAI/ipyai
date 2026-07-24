@@ -2,13 +2,12 @@
 
 The session IS a Dialog: executed cells append as code/note messages (with verbatim nbformat
 outputs), AI turns append as prompt messages whose output holds the reply in fastllm's canonical
-formatted form. Context assembly is `dlg2hist` -- no hand-rolled XML -- and every backend is one
-fastllm `AsyncChat` built from the backend table's routing kwargs."""
+formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every model is one
+fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
 import asyncio, ast, os, re, subprocess
 from aidialog.dialog import Dialog, prompt_output
 from aidialog.hist import dlg2hist   # also activates the Message.to_parts/ai_output patches
-from .backends import backend_spec
-from .config import load_config, load_sysp, COMPLETION_SP
+from .config import load_config, load_sysp, SUGGEST_SP
 
 LAST_PROMPT = '_ai_last_prompt'
 LAST_RESPONSE = '_ai_last_response'
@@ -16,21 +15,21 @@ _var_re = re.compile(r"\$`(\w+(?:\([^`]*\))?)`")
 _shell_re = re.compile(r"(?<![\w`])!`([^`]+)`")
 _MISSING = object()
 
-def route(text, prompt_mode):
-    """The `.`/`;`/`!`/`%` dispatch, at submit time: ('prompt'|'code'|'job', payload).
-    Code mode: a leading `.` sends the rest as a prompt. Prompt mode: everything is a prompt,
-    except `;` (strip it, run as code) and `!`/`%` lines (shell/magics, routed like code mode).
-    A single-line bare-`!` command (and `%fg`) is a 'job': the app-side pty layer runs it on the
-    real terminal. Multiline input or embedded `!` (e.g. `x = !ls`) stays kernel-side code, so
-    IPython's own transformer keeps exact SList semantics."""
-    if prompt_mode:
-        s = text.lstrip()
-        if s.startswith(';'): return 'code', text.replace(';', '', 1)
-        if not s.startswith(('!', '%')): return 'prompt', text
-    elif text.startswith('.'): return 'prompt', text[1:]
-    s = text.strip()
-    if s.startswith('!') and '\n' not in s and s[1:].strip(): return 'job', s[1:].strip()
-    if s.split()[:1] == ['%fg'] and '\n' not in s: return 'job', s
+def route(text, mode='code'):
+    """The mode dispatch, at submit time: ('prompt'|'code'|'job', payload). Three modes --
+    prompt (the AI), code (the kernel), shell (the persistent shell) -- with per-submission
+    prefix overrides valid from any *other* mode: `.` sends a prompt, `;` runs code, a leading
+    `!` runs shell (multiline fine: one shell script). Overrides only apply when they change
+    mode, so a prompt legitimately starting with `.` (or shell history's `!!`) passes through
+    at home. Embedded `!` (`x = !ls`) is ordinary code, keeping IPython's exact SList capture
+    semantics kernel-side; `%` lines go to the kernel from every mode."""
+    s = text.lstrip()
+    if mode != 'prompt' and s.startswith('.'): return 'prompt', s[1:]
+    if mode != 'code' and s.startswith(';'): return 'code', text.replace(';', '', 1)
+    if mode != 'shell' and s.startswith('!') and s[1:].strip(): return 'job', s[1:]
+    if s.startswith('%'): return 'code', text  # magics reach the kernel from every mode
+    if mode == 'prompt': return 'prompt', text
+    if mode == 'shell': return 'job', text
     return 'code', text
 
 def _is_note(source):
@@ -86,34 +85,42 @@ class _BridgeNS(dict):
 
 class Assistant:
     """Owns the AI side of a session: config, the session `Dialog`, and the fastllm chat per turn.
-    `chat_factory` injects a fake chat for tests."""
-    def __init__(self, cfg=None, tools=None, bridge=None, cwd=None, chat_factory=None, system_prompt=None):
+    `chat_factory` supplies a stub chat for tests."""
+    def __init__(self, cfg=None, tools=None, bridge=None, cwd=None, chat_factory=None, sp=None):
         self.cfg = cfg or load_config()
-        self.spec = backend_spec(self.cfg['_backend_name'])
-        self.model, self.completion_model, self.think = self.cfg['model'], self.cfg['completion_model'], self.cfg['think']
+        self.model, self.suggest_model, self.think = self.cfg['model'], self.cfg['suggest_model'], self.cfg['think']
         self.tools, self.bridge = tools, bridge
         self.cwd = cwd or os.getcwd()
-        self.system_prompt = load_sysp() if system_prompt is None else system_prompt
+        self.sp = load_sysp() if sp is None else sp
         self._chat_factory = chat_factory
         self.dlg = Dialog(name=os.path.basename(self.cwd))   # the session model
         self.n_cells = 0         # cells recorded, the store's line counter
         self.last_response = ''
         self.last_use = None     # fastllm UsageStats from the latest turn (status-bar material)
-        self.last_req_use = None  # UsageStats of the final request alone: its size is the current context (`last_use` sums a whole turn)
+        self.last_req_use = None  # UsageStats of the final request alone: its size is the current ctx (`last_use` sums a whole turn)
         self.store = None        # optional Store (persistence); set by the app after kernel start
         self._consumer = None    # the in-flight turn's stream-consumer task, cancel_turn's target
+
+    def reset(self):
+        "Start a fresh conversation: new empty Dialog, counters cleared. Kernel state is untouched."
+        self.dlg = Dialog(name=os.path.basename(self.cwd))
+        self.n_cells = 0
+        self.last_response = ''
+        self.last_use = self.last_req_use = None
 
     @property
     def aim_info(self):
         "Model capability dict for dlg2hist media handling; {} when the model is unknown to fastllm."
         try:
             from fastllm.types import get_model_info
-            return dict(get_model_info(self.model, self.spec.chat_kw.get('vendor_name')) or {})
+            from fastllm.acomplete import split_vendor
+            v, m = split_vendor(self.model)
+            return dict(get_model_info(m, v) or {})
         except Exception: return {}
 
     @property
     def ctx_usage(self):
-        "(tokens the context now holds, model max input) from the latest request; None before the first turn or for unknown models."
+        "(tk the ctx now holds, model max input) from the latest request; None before the first turn or for unknown models."
         u, mx = self.last_req_use, self.aim_info.get('max_input_tokens')
         if not (u and mx): return None
         return u.prompt_tokens + u.completion_tokens, mx
@@ -122,22 +129,24 @@ class Assistant:
         if self._chat_factory is not None:
             return self._chat_factory(model=model, sp=sp, tools=tools, ns=ns, hist=hist)
         from fastllm.chat import AsyncChat
-        kw = dict(self.spec.chat_kw)
-        if kw.get('api_name') == 'claude_code':
+        from fastllm.acomplete import split_vendor
+        v, _ = split_vendor(model)
+        if v == 'claude_code':
             import fastllm_claude_code.core  # noqa: F401 -- registers the claude_code api (the bare package import does not)
         return AsyncChat(model=model, sp=sp, tools=tools or None, hist=hist or None,
-                         ns=ns if ns is not None else {}, **kw)
+                         ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
     def add_cell(self, source, outputs):
-        "Record one executed cell: raw iopub (msg_type, content) records become an nbformat code/note message."
+        "Record one executed cell: raw iopub (msg_type, content) records become an nbformat code/note message, returned (None when nothing records)."
+        if source.lstrip().startswith('%ipyai'): return  # housekeeping commands are not part of the conversation
         from .store import nbformat_outputs
         outs = nbformat_outputs(outputs)
-        if _is_note(source): self.dlg.mk_message(_note_str(source), msg_type='note')
-        else: self.dlg.mk_message(source, msg_type='code', output=outs)
+        if _is_note(source): m = self.dlg.mk_message(_note_str(source), msg_type='note')
+        else: m = self.dlg.mk_message(source, msg_type='code', output=outs)
         self.n_cells += 1
-        if self.store:
-            try: self.store.save_cell(self.n_cells, source, outputs)
-            except Exception: pass
+        m.store_line = self.n_cells  # handle for later metadata updates (hide/pin toggles)
+        if self.store: self.store.save_cell(self.n_cells, source, outputs)
+        return m
 
     async def _ref_parts(self):
         "`$`var``/`!`cmd`` expansions gathered across every prompt in the dialog, evaluated now."
@@ -165,7 +174,7 @@ class Assistant:
         """One AI turn: append the prompt message, build history via `dlg2hist`, stream the chat through
         `renderer` (a TurnRenderer) while an `AsyncStreamFormatter` tees the canonical stored form, then
         land the reply in the message output and the kernel namespace. `cancel_turn` freezes the partial
-        mid-stream; the consumer runs as its own task so cancelling it never poisons cleanup awaits."""
+        mid-stream; the consumer runs as its own task so cancelling it leaves cleanup awaits running."""
         from fastllm.chat import AsyncStreamFormatter
         prompt = (prompt or '').strip()
         if not prompt: return None
@@ -175,7 +184,7 @@ class Assistant:
             parts = await self._ref_parts() + parts
             tools = ((await self.tools.openai_schemas()) or None) if self.tools else None
             ns = _BridgeNS(self.tools) if tools else {}
-            chat = self._make_chat(self.model, self.system_prompt, tools=tools, ns=ns, hist=hist)
+            chat = self._make_chat(self.model, self.sp, tools=tools, ns=ns, hist=hist)
             stream = await chat(parts, stream=True, think=self.think or None, max_steps=21)
         except BaseException:
             self.dlg.remove_msgs([pmsg])   # the turn never started: a retry must not double the prompt
@@ -210,22 +219,21 @@ class Assistant:
             try: await self.bridge.set_vars(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
             except Exception: pass
         if self.store:
-            try: self.store.save_prompt(prompt, '\n\n'.join(p for p in parts if isinstance(p, str)), text, self.n_cells)
-            except Exception: pass
+            pmsg.store_id = self.store.save_prompt(prompt, '\n\n'.join(p for p in parts if isinstance(p, str)), text, self.n_cells)  # rowid: the handle for later metadata updates
         return text
 
     def _recent_xml(self):
-        "Messages since the last completed prompt, in history XML: the context for inline completion."
+        "Messages since the last completed prompt, in history XML: the ctx for inline suggestion."
         msgs = self.dlg.messages
         i = max((j + 1 for j, m in enumerate(msgs) if m.msg_type == 'prompt'), default=0)
         return '\n'.join(x for m in msgs[i:] if (x := m.hist_xml()))
 
-    async def ai_complete(self, prefix, suffix=''):
-        "One-shot inline completion (Alt-.): recent context + the split input, via the small model."
+    async def suggest(self, prefix, suffix=''):
+        "One-shot inline suggestion (Alt-.): recent ctx + the split input, via the small model."
         parts = [self._recent_xml(), f'<current-input>\n<prefix>{prefix}</prefix>']
         if suffix.strip(): parts.append(f'<suffix>{suffix}</suffix>')
-        parts += ['</current-input>', 'Return only the completion text to insert immediately after the prefix.']
-        chat = self._make_chat(self.completion_model, COMPLETION_SP)
+        parts += ['</current-input>', 'Return only the suggestion text to insert immediately after the prefix.']
+        chat = self._make_chat(self.suggest_model, SUGGEST_SP)
         rs = await chat('\n'.join(p for p in parts if p), stream=True)
         try: return ''.join([(o.get('text') or '') async for o in rs if isinstance(o, dict)]).strip()
         finally:

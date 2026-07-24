@@ -71,9 +71,10 @@ class ReplyRenderer:
             # an already-folded partial stays folded: un-collapsing here would repaint the whole body,
             # flooding the screen and letting progressive commit tear a block we promised to keep to one line
             g.update(*rs)
+            g.blk.source = src
             self.partial = None
         else:
-            self.comp.print_block(rs[0], gutter=self.gutter, tag='ai', collapse_at=fold)
+            self.comp.print_block(rs[0], gutter=self.gutter, tag='ai', collapse_at=fold, source=src)
             for r in rs[1:]: self.comp.print_block(r, gutter=self.gutter, tag='ai', collapse_at=fold)
 
     def _drop_partial(self):
@@ -93,6 +94,7 @@ class ReplyRenderer:
             if src.strip():
                 if self.partial is None: self.partial = Grower(self.comp, self.gutter, 'ai', self.collapse_at)
                 self.partial.update(Text(src, style='dim'))
+                self.partial.blk.source = src
 
     def flush(self):
         "Finalize everything (turn done, or a tool block is about to interrupt the flow)."
@@ -135,6 +137,7 @@ class TurnRenderer:
         if result is not None and result.strip():
             body = [line, Text(result.rstrip('\n'), style='red' if error else 'dim')]
         g.update(*body)
+        g.blk.source = '\n'.join(p.plain for p in body)
         self.tool = (g, line, out)
         if result is not None:
             g.fold()   # collapsed by default: the call line summarizes, the result is a toggle away
@@ -163,7 +166,9 @@ class TurnRenderer:
                 self.think = (Grower(self.comp, self.gutters('think'), 'think', collapse_at=self.collapse_at), '')
             g, acc = self.think
             acc += thk
-            if acc.strip(): g.update(Text(acc.strip(), style='dim italic'))
+            if acc.strip():
+                g.update(Text(acc.strip(), style='dim italic'))
+                g.blk.source = acc.strip()
             self.think = (g, acc)
         elif text := e.get('text'):
             self._close_think()

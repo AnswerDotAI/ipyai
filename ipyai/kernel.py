@@ -1,5 +1,5 @@
 "Kernel lifecycle and incremental execution: conkernelclient + ipymini, iopub rendered as it arrives."
-import asyncio, sys
+import asyncio, sys, uuid
 from queue import Empty
 from conkernelclient import ConKernelManager, DeadKernelError
 from jupyter_client.kernelspec import KernelSpec
@@ -29,11 +29,16 @@ class KernelSession:
 
     async def run(self, code, on_output):
         """Execute `code`, calling `on_output(msg_type, content)` per iopub output message as it arrives.
-        Completion means both the shell reply and the idle status. A ZMQ peer dying is silent -- no EOF,
-        the reply just never comes -- so liveness is polled while waiting (conkernel's lesson)."""
+        Completion means both the shell reply and the idle status OF THIS EXECUTION: iopub is a shared
+        broadcast, so status and outputs are filtered by parent msg id -- a stray idle left by an
+        out-of-band `eval_expr` (e.g. the shell layer's cwd sync) must not end the loop early, or this
+        cell's outputs orphan until the next run paints them one cell late. Comm traffic is deliberately
+        unfiltered. A ZMQ peer dying is silent -- no EOF, the reply just never comes -- so liveness is
+        polled while waiting (conkernel's lesson)."""
         self.busy = True
         try:
-            t = asyncio.ensure_future(self.kc.execute(code, reply=True, timeout=None))
+            mid = uuid.uuid4().hex
+            t = asyncio.ensure_future(self.kc.execute(code, reply=True, timeout=None, msg_id=mid))
             idle = False
             while not (t.done() and idle):
                 try: msg = await self.kc.get_iopub_msg(timeout=1)
@@ -43,8 +48,9 @@ class KernelSession:
                         raise DeadKernelError('kernel died while executing')
                     continue
                 mt, c = msg['msg_type'], msg['content']
-                if mt == 'status' and c.get('execution_state') == 'idle': idle = True
-                elif mt in OUTPUT_MSGS: on_output(mt, c)
+                mine = msg.get('parent_header', {}).get('msg_id') == mid
+                if mt == 'status' and c.get('execution_state') == 'idle' and mine: idle = True
+                elif mt in OUTPUT_MSGS and mine: on_output(mt, c)
                 elif mt in COMM_MSGS and self.on_comm is not None: self.on_comm(mt, c)
         finally: self.busy = False
 

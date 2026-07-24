@@ -34,22 +34,30 @@ async def ipyai(line=''):
 
     %ipyai                        current settings and commands
     %ipyai model NAME             set the turn model
-    %ipyai completion_model NAME  set the inline-completion model
+    %ipyai suggest_model NAME     set the inline-suggestion model
     %ipyai think LEVEL            set think effort
     %ipyai code_theme NAME        set the code highlight theme, future blocks only ('auto' redetects)
     %ipyai prompt                 toggle prompt mode (same as alt-p)
     %ipyai sessions               list past ipyai sessions for this directory
+    %ipyai reset                  start a fresh conversation (and a new resumable session row)
+    %ipyai save PATH              export the session dialog as a .ipynb
+    %ipyai load PATH              import a dialog .ipynb into the session
 
     Setters double as getters: `%ipyai model` (no value) shows the current value."""
     ip = get_ipython()
-    unlock = getattr(getattr(ip, 'kernel', None), 'unlock', None)
-    if unlock is None: raise RuntimeError('%ipyai needs an ipyai host (an ipymini kernel with unlock support)')
+    release = getattr(getattr(ip, 'kernel', None), 'unlock', None)
+    if release is None: raise RuntimeError('%ipyai needs an ipyai host (an ipymini kernel with unlock support)')
+    cmd = line.split()
+    if cmd[:1] == ['reset']:
+        # The kernel-side half of reset: a fresh history session, whose number keys the host's new store row
+        ip.history_manager.new_session()
+        cmd = ['reset', str(ip.history_manager.session_number)]
     _state['n'] += 1
     req = _state['n']
     fut = asyncio.get_running_loop().create_future()
     _state['pending'][req] = fut
-    _comm().send(dict(cmd=line.split(), req=req))
-    unlock()  # release the shell queue so the host's comm_msg ack can run while we await
+    _comm().send(dict(cmd=cmd, req=req))
+    release()  # release the shell queue so the host's comm_msg ack can run while we await
     try: d = await asyncio.wait_for(fut, _TIMEOUT)
     except asyncio.TimeoutError:
         _state['pending'].pop(req, None)

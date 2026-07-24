@@ -57,5 +57,5 @@ async def setup_tools(client):
     bridge = ConBridge(client)
     try: await bridge._exec(PYTHON_TOOL_SRC)
     except Exception: pass
-    await bridge.inject_tools(skip=('py', 'python'))
+    await bridge.seed_tools(skip=('py', 'python'))
     return bridge, ToolRegistry(bridge)

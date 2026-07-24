@@ -1,4 +1,4 @@
-"Separate kernel process: spawn + bootstrap + skip-existing-on-inject + shutdown."
+"Separate kernel process: spawn + bootstrap + skip-existing-on-seed + shutdown."
 import asyncio
 
 from jupyter_client.asynchronous.client import AsyncKernelClient
@@ -14,7 +14,7 @@ _BOOTSTRAP = ("from IPython import get_ipython\n"
     "_ip.history_manager.db_log_output = True\n")
 
 
-def test_spawn_bootstrap_skip_inject_shutdown():
+def test_spawn_bootstrap_skip_seed_shutdown():
     km = KernelManager()
     km.start_kernel(extra_arguments=["--HistoryManager.enabled=True"])
     loop = asyncio.new_event_loop()
@@ -35,15 +35,15 @@ def test_spawn_bootstrap_skip_inject_shutdown():
             present_with_preseed = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
             assert "bash" in present_with_preseed, "preseeded callable should count as present"
 
-            await bridge.inject_tools(skip=present_with_preseed)
+            await bridge.seed_tools(skip=present_with_preseed)
 
             res = await bridge.call_tool("bash", {})
-            assert "sentinel-preseeded" in res, f"inject_tools with skip should have preserved preseeded bash; got {res!r}"
+            assert "sentinel-preseeded" in res, f"seed_tools with skip should have preserved preseeded bash; got {res!r}"
 
             await bridge._exec("globals().pop('bash', None)")
-            await bridge.inject_tools(skip=set(await bridge.present_names(CUSTOM_TOOL_NAMES)))
+            await bridge.seed_tools(skip=set(await bridge.present_names(CUSTOM_TOOL_NAMES)))
             names = set(await bridge.available_names(force=True))
-            assert "bash" in names, "after removing preseed and re-injecting, real bash should land"
+            assert "bash" in names, "after removing preseed and re-seeding, real bash should land"
 
             try: await client.stop_channels()
             except Exception: client.stop_channels()

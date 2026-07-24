@@ -45,7 +45,7 @@ async def _prepare_kernel_bridge(client):
     bridge = KernelBridge(client)
     await bridge._exec(_KERNEL_BOOTSTRAP)
     present = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-    await bridge.inject_tools(skip=present)
+    await bridge.seed_tools(skip=present)
     await bridge.available_names(force=True)
     return bridge
 
