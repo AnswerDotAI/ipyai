@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ipyai"
 dynamic = ["version"]
-description = "Multi-backend terminal IPython assistant"
+description = "Terminal IPython with an AI assistant on the same transcript"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}

@@ -3,8 +3,8 @@ import json, os
 from pathlib import Path
 from fastcore.xdg import xdg_config_home
 
-DEFAULT_MODEL = 'codex/gpt-5.4'
-DEFAULT_SUGGEST_MODEL = 'codex/gpt-5.4-mini'
+DEFAULT_MODEL = 'codex/gpt-5.6-terra'
+DEFAULT_SUGGEST_MODEL = 'codex/gpt-5.6-luna'
 DEFAULT_THINK = 'm'
 DEFAULT_CODE_THEME = 'auto'   # auto: pick ansi_dark/ansi_light from the terminal background (OSC 11)
 DEFAULT_PROMPT_MODE = False

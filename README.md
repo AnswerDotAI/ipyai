@@ -5,12 +5,12 @@
 ## Install
 
 ```bash
-pip install -e ipyai
+pip install -e .
 ```
 
 ## Models
 
-Models live in one flat namespace: a vendor-prefixed string such as `codex/gpt-5.4` (the default), `anthropic/claude-sonnet-4-6`, or `claude_code/claude-sonnet-4-6`. The prefix carries the transport as well as the vendor: `claude_code/` drives your Claude Code subscription while `anthropic/` uses an API key, for the same model name. Switch mid-session with `%ipyai model NAME`. The `-b` flag is shorthand: `-b codex`, `-b claude`, or `-b claude-api` expands to a default model pair.
+Models live in one flat namespace: a vendor-prefixed string such as `codex/gpt-5.6-terra` (the default), `anthropic/claude-sonnet-4-6`, or `claude_code/claude-sonnet-4-6`. The prefix carries the transport as well as the vendor: `claude_code/` drives your Claude Code subscription while `anthropic/` uses an API key, for the same model name. Switch mid-session with `%ipyai model NAME`.
 
 ## Modes
 
@@ -33,6 +33,10 @@ Normal job control works, because the shell is real: `cmd &`, `ctrl-Z`, `jobs`, 
 ## Folding and numbering
 
 Big blocks fold to one summary line automatically, and everything visible stays live: click a block's gutter to toggle it. The newest foldable blocks also wear a digit in their gutter (`»4»`, `≡0≡`, with 0 the newest), and `alt-digit` toggles that block from the keyboard. Tool calls in an AI turn fold by default, so `alt-0` shows the latest one. `ctrl-O` toggles the most recent block. Wheel-up inside tmux enters tmux copy-mode for scrollback.
+
+## Images
+
+Images render through kitty graphics with Unicode placeholders, so they survive tmux and scrollback; terminals without kitty graphics get a text placeholder. PNG and JPEG outputs both work. Persisted copies are capped at 2M pixels (display stays full size).
 
 ## Transcript mode
 
@@ -57,9 +61,7 @@ Setters double as getters: `%ipyai model` with no value shows the current one. S
 
 ## Sessions
 
-Transcripts persist in IPython's own `history.sqlite` alongside its input history, scoped to the directory you launched from: history navigation and ghost suggestions draw only on this directory's sessions, and each mode recalls its own past (code cells in code mode, prompts in prompt mode, shell commands in shell mode). Plain `ipyai` resumes where you left off. One past session here resumes silently, several open a picker (digits choose, `Enter` takes the newest, `n` starts fresh), and `ipyai --new` skips straight to a fresh session. `ipyai --sessions` lists past sessions, and `ipyai -r 43` resumes one by id. Resume repaints the transcript without re-running anything. `%ipyai load` does the reverse for curated starter templates: it silently re-runs a dialog's cells to rebuild kernel state, painting nothing (`ipyai -l PATH` at startup).
-
-Images render through kitty graphics with Unicode placeholders, so they survive tmux and scrollback; terminals without kitty graphics get a text placeholder. PNG and JPEG outputs both work. Persisted copies are capped at 2M pixels (display stays full size).
+Transcripts persist in IPython's own `history.sqlite` alongside its input history, scoped to the directory you launched from: history navigation and ghost suggestions draw only on this directory's sessions, and each mode recalls its own past (code cells in code mode, prompts in prompt mode, shell commands in shell mode). Plain `ipyai` starts a fresh session; resuming is explicit with `-r`. Bare `ipyai -r` picks from this directory's past sessions (one resumes silently, several open a picker: digits choose, `Enter` takes the newest, `n` starts fresh), and `ipyai -r 43` resumes one by id (see `ipyai --sessions` for the list). Resume repaints the transcript without re-running anything. `%ipyai load` does the reverse for curated starter templates: it silently re-runs a dialog's cells to rebuild kernel state, painting nothing (`ipyai -l PATH` at startup).
 
 ## Keys
 
@@ -81,13 +83,15 @@ Config lives under `XDG_CONFIG_HOME/ipyai/`: `config.json` and `sysp.txt` (the s
 
 ```json
 {
-  "model": "codex/gpt-5.4",
-  "suggest_model": "codex/gpt-5.4-mini",
+  "model": "codex/gpt-5.6-terra",
+  "suggest_model": "codex/gpt-5.6-luna",
   "think": "m",
   "code_theme": "auto",
   "prompt_mode": false
 }
 ```
+
+Every key is also a CLI flag for one launch: `ipyai --model anthropic/claude-sonnet-4-6 --think h`. Run `ipyai --help` for the full list; `--think` accepts `l`/`m`/`h`/`x`.
 
 ## Development
 

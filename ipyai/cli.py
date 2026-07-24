@@ -1,5 +1,6 @@
 "The ipyai terminal app: teleprint UI over a Jupyter kernel, with the assistant riding the block model."
 import asyncio, base64, math, os, pyghostty, re, shlex, signal, subprocess, tempfile, time
+from typing import Annotated
 from pathlib import Path
 from kittytgp import render_parts, kitty_probe, kitty_supported, kitty_env_hint
 from rich.text import Text
@@ -14,6 +15,8 @@ from teleprint.transcript import TranscriptView
 from teleprint.jobs import spawn_shell, relay_shell, finish_job
 import aidialog.ipynb  # noqa: F401 -- activates the Message.cell_meta/to_cell patches (meta_attrs serialization)
 from fastcore.ansi import strip_ansi
+from fastcore.basics import str_enum
+from fastcore.script import call_parse
 from .sig import call_context, parse_sig_text, active_param
 from .kernel import KernelSession
 from .history import History
@@ -420,10 +423,10 @@ class App:
 
     async def attach_assistant(self, resume=None, load=None, fresh=False):
         """Wire the AI side to the live kernel: bridge + tools, persistence into the kernel's own
-        history db, optional resume/dialog load. With neither `-r` nor `-l` nor `--new`, classic
-        directory scoping applies: no past session here starts fresh, exactly one resumes it
-        silently, several open the startup picker (a transient: digits pick, Enter = newest,
-        n/Esc = fresh)."""
+        history db, optional resume/dialog load. `fresh` (the plain-launch default) starts a new
+        session; `resume=N` resumes that session; neither (bare `-r`) applies directory scoping:
+        no past session here starts fresh, exactly one resumes it silently, several open the
+        startup picker (a transient: digits pick, Enter = newest, n/Esc = fresh)."""
         from .bridge import setup_tools
         from .store import Store
         bridge, tools = await setup_tools(self.k.kc)
@@ -1004,23 +1007,6 @@ class App:
             loop.remove_reader(self.tty.fd)
             for s in (signal.SIGINT, signal.SIGWINCH): loop.remove_signal_handler(s)
 
-BACKEND_SUGAR = {  # -b shorthand over the flat model namespace: (model, suggest_model) pairs
-    'codex': ('codex/gpt-5.4', 'codex/gpt-5.4-mini'),
-    'claude': ('claude_code/claude-sonnet-4-6', 'claude_code/claude-haiku-4-5'),
-    'claude-api': ('anthropic/claude-sonnet-4-6', 'anthropic/claude-haiku-4-5')}
-
-def _parse_args(argv=None):
-    import argparse
-    p = argparse.ArgumentParser(prog='ipyai', description='IPython + AI on the teleprint transcript')
-    p.add_argument('-p', '--prompt-mode', action='store_true', help='start in prompt mode')
-    p.add_argument('-b', '--backend', default=None, choices=sorted(BACKEND_SUGAR),
-                   help='model shorthand: expands to a default (model, suggest_model) pair')
-    p.add_argument('-r', '--resume', type=int, default=None, help='resume ipyai session N (see --sessions)')
-    p.add_argument('-l', '--load', metavar='PATH', default=None, help='load a dialog .ipynb into the session at startup')
-    p.add_argument('--sessions', action='store_true', help='list past ipyai sessions for this directory and exit')
-    p.add_argument('--new', action='store_true', help='start a fresh session (skip the directory resume/picker)')
-    return p.parse_args(argv)
-
 def _sessions_text(rows):
     "Past-session rows as the table %ipyai sessions and --sessions both show."
     rows = [r for r in rows if r[0] >= 0]
@@ -1037,10 +1023,27 @@ def _list_sessions(cwd):
     from .store import Store
     print(_sessions_text(Store(hist_path()).sessions(cwd=cwd)))
 
-async def _amain(a):
+Think = str_enum('Think', 'l', 'm', 'h', 'x')
+
+@call_parse
+async def main(
+    model:str=None,          # turn model, a vendor-prefixed string like codex/gpt-5.6-terra
+    suggest_model:str=None,  # inline-suggestion model
+    think:Think=None,        # think effort
+    code_theme:str=None,     # code highlight theme ('auto' detects from the terminal background)
+    Prompt_mode:bool=False,  # start in prompt mode
+    Resume:Annotated[int, "resume a past session: bare -r picks from this directory's sessions, -r N resumes session N", dict(nargs='?', const=-1)]=None,
+    Load:str=None,           # load a dialog .ipynb into the session at startup
+    sessions:bool=False,     # list past ipyai sessions for this directory and exit
+):
+    "IPython + AI on the teleprint transcript (plain launch always starts a fresh session)"
+    import faulthandler
+    faulthandler.register(signal.SIGQUIT)  # C-\ prints every thread's stack and continues: a wedged app becomes diagnosable from the pane
+    if sessions: return _list_sessions(os.getcwd())
     cfg = load_config()
-    if a.backend: cfg['model'], cfg['suggest_model'] = BACKEND_SUGAR[a.backend]
-    if a.prompt_mode: cfg['prompt_mode'] = True
+    cfg |= {k: str(v) for k, v in dict(model=model, suggest_model=suggest_model,
+                                       think=think, code_theme=code_theme).items() if v}
+    if Prompt_mode: cfg['prompt_mode'] = True
     t = RealTty()
     t.write('\x1b[?1000;1006h\x1b[?2004h')  # SGR mouse + bracketed paste
     try:
@@ -1048,23 +1051,10 @@ async def _amain(a):
         app.detect_kitty()
         if cfg.get('code_theme', 'auto') == 'auto': app.detect_theme()
         await app.k.start()
-        await app.attach_assistant(resume=a.resume, load=a.load, fresh=a.new)
+        await app.attach_assistant(resume=Resume if (Resume or 0) > 0 else None, load=Load,
+                                    fresh=Resume is None)  # plain launch is fresh; bare -r (const -1) opens the picker
         await app.run()
     finally:
         t.write('\x1b[?2004l\x1b[?1000;1006l\r\n')
         t.restore()
         if app.k.kc is not None: await app.k.close()
-
-def main(argv=None):
-    a = _parse_args(argv)
-    import faulthandler
-    faulthandler.register(signal.SIGQUIT)  # C-\ prints every thread's stack and continues: a wedged app becomes diagnosable from the pane
-    if a.sessions: return _list_sessions(os.getcwd())
-    try: asyncio.run(_amain(a))
-    except Exception:
-        import traceback
-        traceback.print_exc()  # terminal already restored by the finally, so this is readable
-
-def main_codex(argv=None):
-    import sys
-    main(['-b', 'codex'] + (sys.argv[1:] if argv is None else argv))

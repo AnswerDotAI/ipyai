@@ -13,7 +13,7 @@ INLINE = {'strong': 'bold', 'em': 'italic', 'code': 'cyan', 'del': 'strike',
 def _inline(node, t, style=''):
     for c in node.children:
         nm = getattr(c, 'name', None)
-        if nm == '#text': t.append(c.data, style=style or None)
+        if nm == '#text': t.append(c.text, style=style or None)
         elif nm == 'br': t.append('\n')
         else:
             sty = f"{style} {INLINE.get(nm, '')}".strip()
@@ -29,7 +29,7 @@ def _find(el, name):
 def _code_block(pre, theme='ansi_dark'):
     code = next(_find(pre, 'code'), None)
     if code is None: return _inline(pre, Text())
-    src = ''.join(c.data for c in code.children if getattr(c, 'name', None) == '#text')
+    src = ''.join(c.text for c in code.children if getattr(c, 'name', None) == '#text')
     cls = (code.attrs or {}).get('class') or ''
     lang = next((w.removeprefix('language-') for w in cls.split() if w.startswith('language-')), 'text')
     return Syntax(src.rstrip('\n'), lang, theme=theme)
@@ -45,7 +45,7 @@ def _list(el, ordered, depth=0):
             if nm in ('ul', 'ol'):
                 t.append('\n')
                 t.append(_list(c, nm == 'ol', depth + 1))
-            elif nm == '#text': t.append(c.data)
+            elif nm == '#text': t.append(c.text)
             else: _inline(c, t)
         i += 1
     return t
@@ -88,6 +88,6 @@ def md_blocks(md, theme='ansi_dark', **kw):
     out = []
     for c in mdhtml.to_dom(md, **kw).children:
         if getattr(c, 'name', None) == '#text':
-            if c.data.strip(): out.append(Text(c.data.strip()))
+            if c.text.strip(): out.append(Text(c.text.strip()))
         else: out.append(node2rich(c, theme))
     return out
