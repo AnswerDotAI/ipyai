@@ -153,7 +153,7 @@ def test_reply_stored_in_fastllm_form():
             await asyncio.sleep(0.02)
             if not app.busy and stub.calls: break
         resp = app.assistant.last_response
-        assert "tool-usage-details" in resp and 'Done.' in resp
+        assert '```json {.tool}' in resp and 'Done.' in resp
         from fastllm.chat import fmt2hist
         msgs = fmt2hist(resp)   # the stored form round-trips
         assert any(p.type == PartType.tool_result for m in msgs for p in m.content)
