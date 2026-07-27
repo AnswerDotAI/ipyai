@@ -11,7 +11,7 @@ collapsed-by-default blocks, and a fresh partial follows."""
 import mdhtml
 from rich.text import Text
 from .mdrich import md_blocks
-from fastllm.types import Part, PartType
+from aidialog.msg_parts import Part, PartType
 
 def _trunc(v, mx=40):
     s = v if isinstance(v, str) else repr(v)

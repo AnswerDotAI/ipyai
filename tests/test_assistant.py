@@ -1,7 +1,7 @@
 "cp3/cp4: routing, streaming reply rendering, the assistant end-to-end over a StubChat, paste bindings, ghost text."
 import asyncio
 from rich.text import Text
-from fastllm.types import Part, PartType
+from aidialog.msg_parts import Part, PartType
 from teleprint.testing import EmuTty
 from ipyai.cli import App, _gutter
 from ipyai.reply import TurnRenderer
@@ -154,7 +154,7 @@ def test_reply_stored_in_fastllm_form():
             if not app.busy and stub.calls: break
         resp = app.assistant.last_response
         assert '```json {.tool}' in resp and 'Done.' in resp
-        from fastllm.chat import fmt2hist
+        from aidialog.msg_parts import fmt2hist
         msgs = fmt2hist(resp)   # the stored form round-trips
         assert any(p.type == PartType.tool_result for m in msgs for p in m.content)
     asyncio.run(go())
