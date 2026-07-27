@@ -502,7 +502,7 @@ class App:
 
     def _replay_reply(self, response):
         "Render a stored reply through the same block machinery: fmt2hist recovers text and tool parts."
-        from fastllm.chat import fmt2hist
+        from aidialog.msg_parts import fmt2hist
         tr = TurnRenderer(self.comp, _gutter, theme=self.theme, collapse_at=self.collapse_at)
         try: msgs = fmt2hist(response)
         except Exception: msgs = None

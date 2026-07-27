@@ -6,7 +6,7 @@ formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every mo
 fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
 import asyncio, ast, os, re, subprocess
 from aidialog.dialog import Dialog, prompt_output
-from llmsurgery.hist import dlg2hist   # also activates the Message.to_parts/ai_output patches
+from llmsurgery.hist import dlg2hist   # also activates the Message.to_parts patch (ai_output now comes with aidialog.dialog)
 from .config import load_config, load_sysp, SUGGEST_SP
 
 LAST_PROMPT = '_ai_last_prompt'
