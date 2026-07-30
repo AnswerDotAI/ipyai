@@ -83,6 +83,12 @@ class _BridgeNS(dict):
 
     def __getitem__(self, name): return self.get(name)
 
+def _split_vendor(model):
+    "`split_vendor`, with the claude_code transport api registered first (the bare package import does not register it)."
+    import fastllm_claude_code.core  # noqa: F401 -- registers the claude_code api
+    from fastllm.acomplete import split_vendor
+    return split_vendor(model)
+
 class Assistant:
     """Owns the AI side of a session: config, the session `Dialog`, and the fastllm chat per turn.
     `chat_factory` supplies a stub chat for tests."""
@@ -113,8 +119,7 @@ class Assistant:
         "Model capability dict for dlg2hist media handling; {} when the model is unknown to fastllm."
         try:
             from fastllm.types import get_model_info
-            from fastllm.acomplete import split_vendor
-            v, m = split_vendor(self.model)
+            v, m = _split_vendor(self.model)
             return dict(get_model_info(m, v) or {})
         except Exception: return {}
 
@@ -129,10 +134,7 @@ class Assistant:
         if self._chat_factory is not None:
             return self._chat_factory(model=model, sp=sp, tools=tools, ns=ns, hist=hist)
         from fastllm.chat import AsyncChat
-        from fastllm.acomplete import split_vendor
-        v, _ = split_vendor(model)
-        if v == 'claude_code':
-            import fastllm_claude_code.core  # noqa: F401 -- registers the claude_code api (the bare package import does not)
+        v, _ = _split_vendor(model)
         return AsyncChat(model=model, sp=sp, tools=tools or None, hist=hist or None,
                          ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
