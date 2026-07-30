@@ -5,11 +5,13 @@ from .kernel_bridge import KernelBridge, _expr_value, _EXEC_TIMEOUT
 from .tooling import ToolRegistry
 
 PYTHON_TOOL_SRC = '''
-def py(code:str):  # `py`, the solveit name (codex reserves the function name `python` model-side)
+async def py(code:str):  # `py`, the solveit name (codex reserves the function name `python` model-side)
     "Execute `code` in the user's live IPython session; returns captured output, the result repr, and any error."
     from IPython.utils.capture import capture_output
     ip = get_ipython()
-    with capture_output() as cap: res = ip.run_cell(code, store_history=False)
+    try: tc,exc = ip.transform_cell(code),None
+    except Exception: tc,exc = code,sys.exc_info()
+    with capture_output() as cap: res = await ip.run_cell_async(code, store_history=False, transformed_cell=tc, preprocessing_exc_tuple=exc)
     parts = [cap.stdout, cap.stderr]
     parts += [o.data.get('text/plain', '') for o in cap.outputs]  # the displayed result lands here under capture
     if res.result is not None and not cap.outputs: parts.append(repr(res.result))
@@ -24,15 +26,14 @@ class ConBridge(KernelBridge):
         async with self._exec_lock:
             msg_id = uuid.uuid4().hex
             rep = self.client.execute(code, reply=True, timeout=timeout, msg_id=msg_id,
-                                      silent=True, store_history=False, user_expressions=expressions or {})
+                silent=True, store_history=False, user_expressions=expressions or {})
             stream = [] if capture_stream else None
             iop = asyncio.create_task(self._drain_iopub(msg_id, stream, timeout))
             try: reply = await rep
             finally:
                 if not iop.done(): iop.cancel()
             content = reply['content']
-            if content.get('status') != 'ok':
-                raise RuntimeError(content.get('evalue') or content.get('ename') or 'kernel execute failed')
+            if content.get('status') != 'ok': raise RuntimeError(content.get('evalue') or content.get('ename') or 'kernel execute failed')
             exprs = {k: _expr_value(v) for k, v in (content.get('user_expressions') or {}).items()}
             return exprs, ''.join(stream) if stream is not None else ''
 
