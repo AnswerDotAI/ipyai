@@ -9,9 +9,7 @@ async def py(code:str):  # `py`, the solveit name (codex reserves the function n
     "Execute `code` in the user's live IPython session; returns captured output, the result repr, and any error."
     from IPython.utils.capture import capture_output
     ip = get_ipython()
-    try: tc,exc = ip.transform_cell(code),None
-    except Exception: tc,exc = code,sys.exc_info()
-    with capture_output() as cap: res = await ip.run_cell_async(code, store_history=False, transformed_cell=tc, preprocessing_exc_tuple=exc)
+    with capture_output() as cap: res = await ip.run_cell_async(code, store_history=False)
     parts = [cap.stdout, cap.stderr]
     parts += [o.data.get('text/plain', '') for o in cap.outputs]  # the displayed result lands here under capture
     if res.result is not None and not cap.outputs: parts.append(repr(res.result))
