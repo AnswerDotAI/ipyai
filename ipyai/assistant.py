@@ -85,6 +85,8 @@ class _BridgeNS(dict):
 
 def _split_vendor(model):
     "`split_vendor`, with the claude_code transport api registered first (the bare package import does not register it)."
+    import fastllm_claude_code.core  # noqa: F401 -- registers the claude_code api
+    from fastllm.acomplete import split_vendor
     return split_vendor(model)
 
 class Assistant:
@@ -117,10 +119,7 @@ class Assistant:
         "Model capability dict for dlg2hist media handling; {} when the model is unknown to fastllm."
         try:
             from fastllm.types import get_model_info
-            from fastllm.acomplete import split_vendor
-            import fastllm_claude_code.core  # noqa: F401 -- registers the claude_code api
-
-            v, m = split_vendor(self.model)
+            v, m = _split_vendor(self.model)
             return dict(get_model_info(m, v) or {})
         except Exception: return {}
 
