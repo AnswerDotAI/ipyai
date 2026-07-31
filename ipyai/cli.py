@@ -127,7 +127,7 @@ class App:
     MODE = dict(code=('»»» ', 'bold green'), prompt=('››› ', 'bold magenta'), shell=('$$$ ', 'bold yellow'))
 
     def _tail_content(self):
-        "Tail layout: dim status above the prompt (a shell's status-line shape). Transients (menu/tooltip) ride `over` in paint(), directly above the status row, and never ink."
+        "Tail layout: a blank spacer row, then dim status above the prompt (a shell's status-line shape). Transients (menu/tooltip) ride `over` in paint(), directly above the status row, and never ink."
         spin = self._SPIN[int(time.monotonic() * 10) % len(self._SPIN)] if self.busy else ' '  # one cell says busy; the ticker animates it
         seg = Text(f'[{self.mode}]', style=Style(meta={'act': 'mode'}))  # click cycles the mode; M-p/c/s pick directly
         status = Text(spin + ' ') + (Text('↻', style='bold yellow') if self.retry else Text('')) + seg + Text('⋄' + self._status(), style='dim')  # ↻: a submit replaces from the recalled exchange
@@ -154,10 +154,10 @@ class App:
         if sugg: prompt.append(sugg, style='dim')
         elif not self.buf.text and not self.k.busy:  # empty composer: hint the two ways out of this mode
             prompt.append(' · '.join(f'M-{m[0]} {m}' for m in self.MODE if m != self.mode), style='dim')
-        lines = [status, prompt]
+        lines = [Text(''), status, prompt]
         before = self.buf.text[:self.buf.cursor]
         col = 4 + cell_len(before.rsplit('\n', 1)[-1])  # all gutter prefixes are 3 glyphs + space = 4 cells
-        return lines, (1, before.count('\n'), col)
+        return lines, (2, before.count('\n'), col)
 
     def _set_mode(self, m):
         "Switch composer mode, repointing history at the mode's own past (see History.refresh)."
@@ -531,7 +531,7 @@ class App:
         for ev in events:
             before = next(reversed(self.comp.blocks), 0)
             if ev['kind'] == 'cell':
-                self.comp.print_block(_hl(ev['source'], self.theme), gutter=_gutter('in'), tag='in', source=ev['source'])
+                self.comp.print_block(_hl(ev['source'], self.theme), gutter=_gutter('in'), tag='in', source=ev['source'], pad=True)
                 self.stream = None
                 self.cell_imgs = set()
                 for o in ev['outputs']: self._replay_output(o)
@@ -540,7 +540,7 @@ class App:
                 a.n_cells += 1
                 m.store_line, m.store_session = ev['line'], session   # cells key by (session, line): a resumed message must update ITS session's row
             else:
-                self.comp.print_block(Text(ev['prompt']), gutter=_gutter('ask'), tag='ask', source=ev['prompt'])
+                self.comp.print_block(Text(ev['prompt'], style='bold'), gutter=_gutter('ask'), tag='ask', source=ev['prompt'], pad=True)
                 self._replay_reply(ev['response'])
                 m = a.dlg.mk_message(ev['prompt'], msg_type='prompt', output=prompt_output(ev['response']), **ev['meta'])
                 a.last_response = ev['response']
@@ -617,14 +617,14 @@ class App:
         self.tip = None
 
     def _submit(self, text, code=None, sh=False):
-        "Print the input block (prompts plain with the ask gutter, shell with `$$$`, code highlighted), clear the buffer, record history. An armed retry fires here: a kind-matched submit rewinds first, a mismatch cancels."
+        "Print the input block (prompts bold, all inputs padded with a turn gap; shell `$$$`, code highlighted), clear the buffer, record history. An armed retry fires here: a kind-matched submit rewinds first, a mismatch cancels."
         if self.retry is not None:
             (m, want), self.retry = self.retry, None
             kind = 'job' if sh else 'prompt' if code is None else 'code'
             if kind == want and self.assistant is not None: self._truncate_to(m)
-        if sh: self.comp.print_block(Text(code), gutter=_gutter('sh'), tag='sh', source=code)
-        elif code is None: self.comp.print_block(Text(text), gutter=_gutter('ask'), tag='ask', source=text)
-        else: self.comp.print_block(_hl(code, self.theme), gutter=_gutter('in'), tag='in', source=code)
+        if sh: self.comp.print_block(Text(code), gutter=_gutter('sh'), tag='sh', source=code, pad=True)
+        elif code is None: self.comp.print_block(Text(text, style='bold'), gutter=_gutter('ask'), tag='ask', source=text, pad=True)
+        else: self.comp.print_block(_hl(code, self.theme), gutter=_gutter('in'), tag='in', source=code, pad=True)
         self.buf.clear()
         self.ai_sugg = None
         self._dismiss()
