@@ -131,8 +131,6 @@ class Assistant:
         from fastllm.chat import AsyncChat
         from fastllm.acomplete import split_vendor
         v, _ = split_vendor(model)
-        if v == 'claude_code':
-            import fastllm_claude_code.core  # noqa: F401 -- registers the claude_code api (the bare package import does not)
         return AsyncChat(model=model, sp=sp, tools=tools or None, hist=hist or None,
                          ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
