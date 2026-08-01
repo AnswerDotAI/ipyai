@@ -10,15 +10,18 @@ from rich.text import Text
 INLINE = {'strong': 'bold', 'em': 'italic', 'code': 'cyan', 'del': 'strike',
           'a': 'underline bright_blue', 'mark': 'reverse'}
 
+def _elem(c, t, style=''):
+    nm = getattr(c, 'name', None)
+    if nm == '#text': return t.append(c.text, style=style or None)
+    if nm == 'br': return t.append('\n')
+    sty = f"{style} {INLINE.get(nm, '')}".strip()
+    href = nm == 'a' and (c.attrs or {}).get('href')
+    if href: sty = f'{sty} link {href}'
+    _inline(c, t, sty)
+    if href: t.append(f' ({href})', style='dim')
+
 def _inline(node, t, style=''):
-    for c in node.children:
-        nm = getattr(c, 'name', None)
-        if nm == '#text': t.append(c.text, style=style or None)
-        elif nm == 'br': t.append('\n')
-        else:
-            sty = f"{style} {INLINE.get(nm, '')}".strip()
-            _inline(c, t, sty)
-            if nm == 'a' and (c.attrs or {}).get('href'): t.append(f" ({c.attrs['href']})", style='dim')
+    for c in node.children: _elem(c, t, style)
     return t
 
 def _find(el, name):
@@ -46,7 +49,7 @@ def _list(el, ordered, depth=0):
                 t.append('\n')
                 t.append(_list(c, nm == 'ol', depth + 1))
             elif nm == '#text': t.append(c.text)
-            else: _inline(c, t)
+            else: _elem(c, t)
         i += 1
     return t
 
