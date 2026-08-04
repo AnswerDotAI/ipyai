@@ -104,7 +104,7 @@ def test_on_out_jpeg_fallback():
     app.paint()
     app.kitty = False
     app.cell_imgs = set()
-    app.on_out('display_data', dict(data={'image/jpeg': base64.b64encode(_jpeg(3, 2)).decode()}))
+    app.on_out(dict(output_type='display_data', data={'image/jpeg': base64.b64encode(_jpeg(3, 2)).decode()}))
     assert '3x2px' in tty.term.text()      # image/jpeg routed and measured like png
 
 def test_theme_detection():

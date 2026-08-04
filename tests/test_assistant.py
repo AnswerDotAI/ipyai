@@ -1,6 +1,5 @@
 "cp3/cp4: routing, streaming reply rendering, the assistant end-to-end over a StubChat, paste bindings, ghost text."
 import asyncio
-from rich.text import Text
 from fastcore.xml import to_xml
 from aidialog.msg_parts import Part, PartType
 from teleprint.testing import EmuTty
@@ -110,137 +109,123 @@ def test_turn_events_interleave():
     scr = tty.term.text()
     assert "py(code=x*2)" in scr and '42' not in scr.split('answer')[0]  # result folded away
 
-def test_prompt_flow_and_ctx():
+async def test_prompt_flow_and_ctx():
     "The routed prompt flow: ask block, reply blocks, dialog records the turn, ctx rides via dlg2hist."
-    async def go():
-        tty, app, stub = mk_app(events=[dict(text='The answer.\n')])
-        app.paint()
-        app.assistant.add_cell('x = 41 + 1', [('stream', {'name': 'stdout', 'text': ''})])
-        app.comp.on_bytes(b'.what is x?\r')
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if not app.busy and stub.calls: break
-        assert [b.tag for b in app.comp.blocks.values()][:2] == ['ask', 'ai']
-        scr = tty.term.text()
-        assert 'what is x?' in scr and 'The answer.' in scr
-        call = stub.calls[0]
-        assert call['model'] == 'm' and call['think'] == 'l'
-        sent = _parts_text(call)
-        assert 'x = 41 + 1' in sent          # the cell rides in the prompt's user parts (dlg2hist)
-        assert call['msg'][-1].endswith('>what is x?</prompt>')  # the aidialog envelope wraps every prompt
-        a = app.assistant
-        assert [m.msg_type for m in a.dlg.messages] == ['code', 'prompt']
-        assert a.last_response == 'The answer.'
-        assert a.dlg.messages[-1].ai_output == 'The answer.'
-        # second turn: history carries turn one; the cell does not repeat in the new prompt parts
-        app.comp.on_bytes(b'.and again?\r')
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if len(stub.calls) == 2: break
-        call2 = stub.calls[1]
-        assert len(call2['hist']) == 2 and 'The answer.' in call2['hist'][1]
-        assert 'x = 41 + 1' in '\n'.join(p for p in call2['hist'][0] if isinstance(p, str))
-        assert 'x = 41 + 1' not in _parts_text(call2)
-    asyncio.run(go())
+    tty, app, stub = mk_app(events=[dict(text='The answer.\n')])
+    app.paint()
+    app.assistant.add_cell('x = 41 + 1', [dict(output_type='stream', name='stdout', text='')])
+    app.comp.on_bytes(b'.what is x?\r')
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if not app.busy and stub.calls: break
+    assert [b.tag for b in app.comp.blocks.values()][:2] == ['ask', 'ai']
+    scr = tty.term.text()
+    assert 'what is x?' in scr and 'The answer.' in scr
+    call = stub.calls[0]
+    assert call['model'] == 'm' and call['think'] == 'l'
+    sent = _parts_text(call)
+    assert 'x = 41 + 1' in sent          # the cell rides in the prompt's user parts (dlg2hist)
+    assert call['msg'][-1].endswith('>what is x?</prompt>')  # the aidialog envelope wraps every prompt
+    a = app.assistant
+    assert [m.msg_type for m in a.dlg.messages] == ['code', 'prompt']
+    assert a.last_response == 'The answer.'
+    assert a.dlg.messages[-1].ai_output == 'The answer.'
+    # second turn: history carries turn one; the cell does not repeat in the new prompt parts
+    app.comp.on_bytes(b'.and again?\r')
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if len(stub.calls) == 2: break
+    call2 = stub.calls[1]
+    assert len(call2['hist']) == 2 and 'The answer.' in call2['hist'][1]
+    assert 'x = 41 + 1' in '\n'.join(p for p in call2['hist'][0] if isinstance(p, str))
+    assert 'x = 41 + 1' not in _parts_text(call2)
 
-def test_reply_stored_in_fastllm_form():
+async def test_reply_stored_in_fastllm_form():
     "The formatter tee stores the canonical form: a tool round-trip lands as a details block in last_response."
-    async def go():
-        tty, app, stub = mk_app(events=[dict(text='Look:\n'), tool_use('py', {'code': '1+1'}),
-                                        tool_result('py', {'code': '1+1'}, '2'), dict(text='Done.')])
-        app.paint()
-        app.comp.on_bytes(b'.check\r')
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if not app.busy and stub.calls: break
-        resp = app.assistant.last_response
-        assert '```json {.tool}' in resp and 'Done.' in resp
-        from aidialog.msg_parts import fmt2hist
-        msgs = fmt2hist(resp)   # the stored form round-trips
-        assert any(p.type == PartType.tool_result for m in msgs for p in m.content)
-    asyncio.run(go())
+    tty, app, stub = mk_app(events=[dict(text='Look:\n'), tool_use('py', {'code': '1+1'}),
+                                    tool_result('py', {'code': '1+1'}, '2'), dict(text='Done.')])
+    app.paint()
+    app.comp.on_bytes(b'.check\r')
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if not app.busy and stub.calls: break
+    resp = app.assistant.last_response
+    assert '```json {.tool}' in resp and 'Done.' in resp
+    from aidialog.msg_parts import fmt2hist
+    msgs = fmt2hist(resp)   # the stored form round-trips
+    assert any(p.type == PartType.tool_result for m in msgs for p in m.content)
 
-def test_interrupt_freezes_turn():
-    async def go():
-        gate = asyncio.Event()
-        tty, app, stub = mk_app(events=[dict(text='partial text so far')], gate=gate)
-        app.paint()
-        app.comp.on_bytes(b'.go\r')
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if 'partial text' in tty.term.text(): break
-        assert app.busy
-        app.on_sigint()   # ctrl-C: cancels the consumer, not the app
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if not app.busy: break
-        assert 'interrupted' in tty.term.text()
-        assert app.assistant.last_response.endswith('*[Response interrupted]*')
-        assert app.assistant.dlg.messages[-1].msg_type == 'prompt'   # the interrupted turn still records
-        gate.set()
-    asyncio.run(go())
+async def test_interrupt_freezes_turn():
+    gate = asyncio.Event()
+    tty, app, stub = mk_app(events=[dict(text='partial text so far')], gate=gate)
+    app.paint()
+    app.comp.on_bytes(b'.go\r')
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if 'partial text' in tty.term.text(): break
+    assert app.busy
+    app.on_sigint()   # ctrl-C: cancels the consumer, not the app
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if not app.busy: break
+    assert 'interrupted' in tty.term.text()
+    assert app.assistant.last_response.endswith('*[Response interrupted]*')
+    assert app.assistant.dlg.messages[-1].msg_type == 'prompt'   # the interrupted turn still records
+    gate.set()
 
-def test_failed_turn_removes_pending_prompt():
+async def test_failed_turn_removes_pending_prompt():
     "A backend error must not leave a pending prompt message tainting the next dlg2hist."
-    async def go():
-        tty, app, stub = mk_app()
-        def boom(**kw): raise RuntimeError('no backend')
-        app.assistant._chat_factory = boom
-        app.paint()
-        app.comp.on_bytes(b'.hi\r')
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if not app.busy: break
-        assert [m.msg_type for m in app.assistant.dlg.messages] == []
-    asyncio.run(go())
+    tty, app, stub = mk_app()
+    def boom(**kw): raise RuntimeError('no backend')
+    app.assistant._chat_factory = boom
+    app.paint()
+    app.comp.on_bytes(b'.hi\r')
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if not app.busy: break
+    assert [m.msg_type for m in app.assistant.dlg.messages] == []
 
-def test_paste_bindings():
-    async def go():
-        tty, app, stub = mk_app()
-        app.paint()
-        app.assistant.last_response = 'Try:\n\n```python\na = 1\n```\n\nthen\n\n```python\nb = 2\n```\n'
-        assert code_blocks(app.assistant.last_response) == ['a = 1', 'b = 2']
-        app.comp.on_bytes(b'\x1bW')          # alt-shift-w: all blocks
-        assert app.buf.text == 'a = 1\nb = 2'
-        app.comp.on_bytes(b'\x15')           # ctrl-u clears
-        app.comp.on_bytes(b'\x1b@')          # alt-shift-2: second block
-        assert app.buf.text == 'b = 2'
-        app.comp.on_bytes(b'\x1b[1;4A')      # alt-shift-up: cycle replaces the buffer
-        assert app.buf.text == 'a = 1'
-        app.comp.on_bytes(b'\x1b[1;4A')
-        assert app.buf.text == 'b = 2'
-    asyncio.run(go())
+async def test_paste_bindings():
+    tty, app, stub = mk_app()
+    app.paint()
+    app.assistant.last_response = 'Try:\n\n```python\na = 1\n```\n\nthen\n\n```python\nb = 2\n```\n'
+    assert code_blocks(app.assistant.last_response) == ['a = 1', 'b = 2']
+    app.comp.on_bytes(b'\x1bW')          # alt-shift-w: all blocks
+    assert app.buf.text == 'a = 1\nb = 2'
+    app.comp.on_bytes(b'\x15')           # ctrl-u clears
+    app.comp.on_bytes(b'\x1b@')          # alt-shift-2: second block
+    assert app.buf.text == 'b = 2'
+    app.comp.on_bytes(b'\x1b[1;4A')      # alt-shift-up: cycle replaces the buffer
+    assert app.buf.text == 'a = 1'
+    app.comp.on_bytes(b'\x1b[1;4A')
+    assert app.buf.text == 'b = 2'
 
-def test_ai_ghost_text():
-    async def go():
-        tty, app, stub = mk_app(suggestion='(reverse=True)')
-        app.paint()
-        app.comp.on_bytes(b'xs.sort')
-        app.comp.on_bytes(b'\x1b.')          # alt-.: explicit AI suggestion
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if app.ai_sugg: break
-        assert app.ai_sugg[2] == '(reverse=True)'
-        assert '(reverse=True)' in tty.term.text()
-        assert stub.calls[-1]['model'] == 'cm'
-        app.comp.on_bytes(b'(')              # document changed: the suggestion is stale and gone
-        assert app.buf.suggestion == ''
-    asyncio.run(go())
+async def test_ai_ghost_text():
+    tty, app, stub = mk_app(suggestion='(reverse=True)')
+    app.paint()
+    app.comp.on_bytes(b'xs.sort')
+    app.comp.on_bytes(b'\x1b.')          # alt-.: explicit AI suggestion
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if app.ai_sugg: break
+    assert app.ai_sugg[2] == '(reverse=True)'
+    assert '(reverse=True)' in tty.term.text()
+    assert stub.calls[-1]['model'] == 'cm'
+    app.comp.on_bytes(b'(')              # document changed: the suggestion is stale and gone
+    assert app.buf.suggestion == ''
 
-def test_prompt_mode_ui():
-    async def go():
-        tty, app, stub = mk_app(events=[dict(text='ok')], prompt_mode=True)
-        app.paint()
-        assert tty.term.text().splitlines()[-1].startswith('›››')  # the mode shows in the marker (trailing space trimmed by text())
-        app.comp.on_bytes(b'hello there\r')  # plain Enter submits: English is never incomplete
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if stub.calls: break
-        assert stub.calls[0]['msg'][-1].endswith('>hello there</prompt>')
-        app.comp.on_bytes(b'\x1bc')          # M-c: direct-select code mode (M-p is no longer a toggle)
-        assert app.mode == 'code'
-        assert tty.term.text().splitlines()[-1].startswith('»»»')
-    asyncio.run(go())
+async def test_prompt_mode_ui():
+    tty, app, stub = mk_app(events=[dict(text='ok')], prompt_mode=True)
+    app.paint()
+    assert tty.term.text().splitlines()[-1].startswith('›››')  # the mode shows in the marker (trailing space trimmed by text())
+    app.comp.on_bytes(b'hello there\r')  # plain Enter submits: English is never incomplete
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if stub.calls: break
+    assert stub.calls[0]['msg'][-1].endswith('>hello there</prompt>')
+    app.comp.on_bytes(b'\x1bc')          # M-c: direct-select code mode (M-p is no longer a toggle)
+    assert app.mode == 'code'
+    assert tty.term.text().splitlines()[-1].startswith('»»»')
 
 def test_ctx_usage_status():
     "The ctx meter: the final request's size over the model window, painted into the dim status line."
@@ -256,21 +241,26 @@ def test_ctx_usage_status():
     assert a.ctx_usage == (32000, 256000)
 
 
-def test_shell_refs_go_through_kernel():
-    "`!`cmd`` refs evaluate via the bridge's getoutput expression, keyed by their ref form; `$` vars alongside."
-    from ipyai.assistant import _MISSING
-    class StubBridge:
+async def test_shell_refs_go_through_kernel():
+    "`$` vars and `!`cmd`` refs resolve in ONE eval_exprs round trip; `!` keyed by ref form; NameError -> warning."
+    class StubClient:
         def __init__(self): self.asked = []
-        async def read_var(self, expr):
-            self.asked.append(expr)
-            if expr.startswith('get_ipython().getoutput'): return 'shell-out'
-            return 42 if expr == 'x' else _MISSING
+        async def eval_exprs(self, vs):
+            self.asked.append(list(vs))
+            def val(e):
+                if e.startswith('get_ipython().getoutput'): return 'shell-out'
+                return 42 if e == 'x' else '<error type="NameError" desc="nope">\nnope</error>'
+            return {e: val(e) for e in vs}
+    class StubBridge:
+        def __init__(self): self.client = StubClient()
     tty, app, stub = mk_app()
     a = app.assistant
     a.bridge = StubBridge()
-    a.dlg.mk_message('use $`x` and !`echo hi`', msg_type='prompt')
-    vh, warn = asyncio.run(a._vars_turn())
+    a.dlg.mk_message('use $`x` and $`nosuch` and !`echo hi`', msg_type='prompt')
+    vh, warn = await a._vars_turn()
     body = to_xml(vh[0][0]) if vh else ''
     assert 'x' in body and '42' in body
     assert '!`echo hi`' in body and 'shell-out' in body
-    assert any('getoutput' in e for e in a.bridge.asked)   # ! ran via the kernel, not subprocess
+    assert 'nosuch' not in body and 'nosuch' in (warn or '')          # undefined: warned, not rendered
+    assert len(a.bridge.client.asked) == 1                            # one round trip for everything
+    assert any('getoutput' in e for e in a.bridge.client.asked[0])    # ! ran via the kernel, not subprocess

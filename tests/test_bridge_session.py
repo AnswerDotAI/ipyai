@@ -1,5 +1,4 @@
 "Integration: the KernelBridge against a live gateway ipymini, and session-file persistence."
-import asyncio
 import pytest
 from ipyai.kernel import KernelSession
 from ipyai.bridge import setup_tools
@@ -10,23 +9,21 @@ from aidialog.dialog import Dialog
 from aidialog.ipynb import read_ipynb
 
 
-def test_bridge_and_writeback(gateway):
+async def test_bridge_and_writeback(gateway):
     "Silent kernel-side exec: the py tool runs live code, set_vars lands LAST_RESPONSE for the user."
-    async def go():
-        async with KernelSession(url=gateway) as k:
-            bridge, tools = await setup_tools(k.kc)
-            names = await tools.names()
-            assert 'py' in names
-            out = await tools.call_text('py', {'code': 'zz = 6*7\nprint("side effect")\nzz'})
-            assert 'side effect' in out and '42' in out
-            assert await bridge.read_var('zz') == 42  # the tool ran in the USER'S namespace
-            await bridge.set_vars(**{LAST_RESPONSE: 'the reply text'})
-            assert await bridge.read_var(LAST_RESPONSE) == 'the reply text'
-            # a normal cell still renders normally after bridge traffic (no iopub leakage)
-            outs = []
-            await k.run('print("clean")', lambda mt, c: outs.append((mt, c)))
-            assert any('clean' in c.get('text', '') for mt, c in outs if mt == 'stream')
-    asyncio.run(go())
+    async with KernelSession(url=gateway) as k:
+        bridge, tools = await setup_tools(k.kc)
+        names = await tools.names()
+        assert 'py' in names
+        out = await tools.call_text('py', {'code': 'zz = 6*7\nprint("side effect")\nzz'})
+        assert 'side effect' in out and '42' in out
+        assert await bridge.read_var('zz') == 42  # the tool ran in the USER'S namespace
+        await bridge.set_vars(**{LAST_RESPONSE: 'the reply text'})
+        assert await bridge.read_var(LAST_RESPONSE) == 'the reply text'
+        # a normal cell still renders normally after bridge traffic (no iopub leakage)
+        outs = []
+        await k.run('print("clean")', outs.append)
+        assert any('clean' in o.get('text', '') for o in outs if o['output_type'] == 'stream')
 
 
 def test_session_files(tmp_path, monkeypatch):

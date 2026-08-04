@@ -1,6 +1,6 @@
-import asyncio, os, tempfile
+import os, tempfile
 
-import pytest
+import pytest, pytest_asyncio
 
 import ipyai.config as config
 from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
@@ -50,14 +50,12 @@ async def _prepare_kernel_bridge(client):
 
 
 async def _snapshot_globals(bridge):
-    exprs = await bridge._exec("", expressions={"_r": "[k for k in globals() if not k.startswith('_')]"})
-    return set(exprs.get("_r") or [])
+    return set(await bridge.read_var("[k for k in globals() if not k.startswith('_')]") or [])
 
 
 async def _clear_extras(bridge, baseline):
-    exprs = await bridge._exec("", expressions={
-        "_r": "[k for k in globals() if not k.startswith('_') and k not in %r]" % list(baseline)})
-    extras = exprs.get("_r") or []
+    extras = await bridge.read_var(
+        "[k for k in globals() if not k.startswith('_') and k not in %r]" % list(baseline)) or []
     if extras: await bridge._exec("\n".join(f"globals().pop({n!r}, None)" for n in extras))
 
 
@@ -78,41 +76,19 @@ def _gateway_env(gateway):
     os.environ.pop('IPYAI_GATEWAY', None)
 
 
-@pytest.fixture(scope="session")
-def session_kernel(gateway):
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def session_kernel(gateway):
+    "One kernel + bridge for the whole session, on pytest-asyncio's session loop."
     from ipyai.kernel import KernelSession
-    loop = asyncio.new_event_loop()
-
-    async def _setup():
-        ks = KernelSession(url=gateway)
-        await ks.start()
-        bridge = await _prepare_kernel_bridge(ks.kc)
-        baseline = await _snapshot_globals(bridge)
-        return ks, bridge, baseline
-
-    ks,bridge,baseline = loop.run_until_complete(_setup())
-    try: yield dict(ks=ks, client=ks.kc, bridge=bridge, baseline=baseline, loop=loop)
-    finally:
-        try: loop.run_until_complete(ks.close())
-        except Exception: pass
-        try: loop.close()
-        except Exception: pass
+    ks = await KernelSession(url=gateway).start()
+    bridge = await _prepare_kernel_bridge(ks.kc)
+    baseline = await _snapshot_globals(bridge)
+    yield dict(ks=ks, client=ks.kc, bridge=bridge, baseline=baseline)
+    await ks.close()
 
 
-@pytest.fixture
-def kernel_bridge(session_kernel, request):
-    "Session kernel bridge with per-test teardown that clears any user_ns names the test added."
-    bridge = session_kernel["bridge"]
-    baseline = session_kernel["baseline"]
-    loop = session_kernel["loop"]
-
-    def _finalize():
-        try: loop.run_until_complete(_clear_extras(bridge, baseline))
-        except Exception: pass
-
-    request.addfinalizer(_finalize)
-    return bridge
-
-
-@pytest.fixture
-def kernel_loop(session_kernel): return session_kernel["loop"]
+@pytest_asyncio.fixture(loop_scope="session")
+async def kernel_bridge(session_kernel):
+    "Session kernel bridge; teardown clears any user_ns names the test added."
+    yield session_kernel["bridge"]
+    await _clear_extras(session_kernel["bridge"], session_kernel["baseline"])

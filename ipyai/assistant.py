@@ -6,13 +6,12 @@ formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every mo
 fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
 import asyncio, ast, os
 from aidialog.dialog import Dialog, INTERRUPTED
-from aidialog.hist import dlg2hist, get_exprs, vars_hist, warning_tag
+from aidialog.hist import dlg2hist, get_exprs, is_nameerr, vars_hist, warning_tag
 from fastcore.xml import to_xml
 from .config import load_config, load_sysp, SUGGEST_SP
 
 LAST_PROMPT = '_ai_last_prompt'
 LAST_RESPONSE = '_ai_last_response'
-_MISSING = object()
 
 def route(text, mode='code'):
     """The mode dispatch, at submit time: ('prompt'|'code'|'job', payload). Three modes --
@@ -45,25 +44,6 @@ def code_blocks(md):
     import mdhtml
     return [b['text'].rstrip('\n') for b in mdhtml.blocks(md or '')
             if b['type'] == 'code_block' and b.get('lang') in ('python', 'py') and b.get('text', '').strip()]
-
-async def _eval_vars(names, bridge):
-    if not names or bridge is None: return {}
-    out = {}
-    for name in names:
-        try: val = await bridge.read_var(name)
-        except Exception: val = _MISSING
-        out[name] = val
-    return out
-
-async def _eval_shell_refs(cmds, bridge):
-    "Evaluate `!` refs via the kernel's own `getoutput` (stdout+stderr, kernel cwd, `var_expand`), keyed by full ref form."
-    if not cmds or bridge is None: return {}
-    out = {}
-    for cmd in sorted(cmds):
-        try: r = await bridge.read_var(f'get_ipython().getoutput({cmd!r}).n')
-        except Exception as e: r = f'Error: {e}'
-        out[f'!`{cmd}`'] = r
-    return out
 
 class _BridgeNS(dict):
     """Dict-shaped proxy routing fastllm's ns-based tool dispatch through the ToolRegistry bridge:
@@ -135,26 +115,27 @@ class Assistant:
                          ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
     def add_cell(self, source, outputs):
-        "Record one executed cell: raw iopub (msg_type, content) records become an nbformat code/note message, returned (None when nothing records)."
+        "Record one executed cell: nbformat-shaped outputs become a code/note message, returned (None when nothing records)."
         if source.lstrip().startswith('%ipyai'): return  # housekeeping commands are not part of the conversation
-        from fastcore.nbio import msgs2outs
-        outs = msgs2outs([dict(msg_type=mt, content=c) for mt, c in outputs])
         if _is_note(source): m = self.dlg.mk_message(_note_str(source), msg_type='note')
-        else: m = self.dlg.mk_message(source, msg_type='code', output=outs)
+        else: m = self.dlg.mk_message(source, msg_type='code', output=list(outputs))
         self.n_cells += 1
         self.save()
         return m
 
     async def _vars_turn(self):
-        """The synthetic variables turn plus any missing-var warning: `$` and `!` refs both evaluated
-        in the kernel (`!` via its own `getoutput`, keyed by full ref form), merged for `vars_hist`."""
+        """The synthetic variables turn plus any missing-var warning: `$` and `!` refs both resolved
+        in ONE kernel round trip (solveit's `prepare_context` shape; `!` via the kernel's own
+        `getoutput`, keyed by full ref form), merged for `vars_hist`."""
         names = get_exprs(self.dlg.messages)
         cmds = get_exprs(self.dlg.messages, sigil='!')
-        values = await _eval_vars(names, self.bridge)
-        missing = sorted(n for n, v in values.items() if v is _MISSING)
-        ns = {n: values[n] for n in names if values.get(n) is not _MISSING and values.get(n) is not None}
-        ns |= await _eval_shell_refs(cmds, self.bridge)
-        warn = warning_tag(f"The following symbols were referenced but aren't defined in the interpreter: {', '.join(missing)}") if missing else None
+        cmd_exprs = {c: f'get_ipython().getoutput({c!r}).n' for c in cmds}
+        ns = {}
+        if self.bridge is not None and (names or cmd_exprs):
+            ns = await self.bridge.client.eval_exprs(vs=names + list(cmd_exprs.values())) or {}
+        missing = sorted(v for v in names if is_nameerr(ns.get(v)))
+        ns = {v: ns[v] for v in names if v in ns and v not in missing} | {f'!`{c}`': ns[e] for c, e in cmd_exprs.items() if e in ns}
+        warn = warning_tag(f"The following symbols were referenced but aren't defined in the interpreter: {', '.join(missing)}." if missing else '')
         return vars_hist(self.aim_info, ns), (to_xml(warn, do_escape=False) if warn else None)
 
     def cancel_turn(self):
@@ -190,7 +171,7 @@ class Assistant:
             async for e in stream:
                 fmt.format_item(e)
                 renderer.event(e)
-        self._consumer = asyncio.ensure_future(_consume())
+        self._consumer = asyncio.create_task(_consume(), name='stream-consumer')  # bare deliberately: its exception is consumed at the await below
         interrupted = False
         try:
             await self._consumer

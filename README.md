@@ -28,9 +28,9 @@ Each AI turn sends the session so far: executed cells with their outputs, notes,
 
 ## The shell
 
-Shell submissions run in one persistent shell, your own bash or zsh with your rc loaded. `cd`, exported variables, aliases, functions, and virtualenv activation persist across commands, and the kernel's working directory follows the shell's. Commands run on the real terminal, so full-screen programs such as `vim` and `htop` work. When a command finishes, a cleaned block of its output enters the transcript and the AI's context.
+Shell submissions run in one persistent shell, your own bash or zsh with your rc loaded, hosted by jupygate beside the kernel and closed with the app. `cd`, exported variables, aliases, functions, and virtualenv activation persist across commands, and the kernel's working directory follows the shell's. Commands run on the real terminal, so full-screen programs such as `vim` and `htop` work. When a command finishes, a cleaned block of its output enters the transcript and the AI's context.
 
-Normal job control works, because the shell is real: `cmd &`, `ctrl-Z`, `jobs`, `fg`, `bg`. Quitting with live jobs warns once and lists them. Pressing `ctrl-D` again quits and terminates them, like closing a terminal window. Typing `exit` ends the shell, and the next shell command starts a fresh one. Embedded forms such as `x = !ls` stay kernel-side with IPython's usual capture semantics.
+Normal job control works, because the shell is real: `cmd &`, `ctrl-Z`, `jobs`, `fg`, `bg`. Quitting while the shell is running warns once; pressing `ctrl-D` again quits, closing the shell and its jobs like a terminal window. Typing `exit` ends the shell, and the next shell command starts a fresh one. Embedded forms such as `x = !ls` stay kernel-side with IPython's usual capture semantics.
 
 ## Folding and numbering
 
@@ -76,7 +76,7 @@ Each session is one dialog `.ipynb` under `./.ipyai/sessions/` (self-gitignored)
 - `ctrl-O` toggles the last block open or closed; `ctrl-T` opens transcript mode
 - `alt-r` recalls your last input (prompt, code, or shell) for editing, and submitting it *replaces* that turn -- the old version and everything after leave the record, and the AI answers the corrected history. In the transcript view, `E` on any prompt does the same from further back. Esc disarms; submitting as a different kind (rewriting a recalled cell into a prompt, say) appends normally instead.
 - `ctrl-C` cancels a running AI turn, else interrupts the kernel, else clears the input
-- `ctrl-D` quits (warning first if the shell has live jobs)
+- `ctrl-D` quits (warning first if the shell is running)
 - `alt-c`/`alt-p`/`alt-s` pick code/prompt/shell mode; `alt-0`..`alt-9` toggle the block wearing that digit
 
 ## Config

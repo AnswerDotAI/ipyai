@@ -12,7 +12,7 @@ from teleprint.compositor import Compositor
 from teleprint.tty import RealTty
 from teleprint.widgets import CompletionMenu, Tooltip, Signature
 from teleprint.transcript import TranscriptView
-from teleprint.jobs import spawn_shell, relay_shell, finish_job
+from .shell import GateShell
 import aidialog.ipynb  # noqa: F401 -- activates the Message.cell_meta/to_cell patches (meta_attrs serialization)
 from fastcore.ansi import strip_ansi
 from fastcore.basics import str_enum
@@ -66,7 +66,7 @@ class App:
         self.cfg = cfg or {}
         self.k = KernelSession() if kernel is None else kernel
         self.hist = _default_history() if history == 'default' else history  # None = off (tests want hermeticity)
-        self.comp = Compositor(tty).start()
+        self.comp = Compositor(tty)  # main awaits comp.start() before painting; tests mostly skip it (a fresh EmuTty gives origin 0 unstarted either way -- the nonzero-origin path has its own test)
         self.buf = Buffer()
         self.stream = None   # the growing stdout block of the in-flight cell
         self.menu = None     # a teleprint CompletionMenu while completing; Tab/shift+Tab cycle, Enter accepts
@@ -81,7 +81,7 @@ class App:
         if self.hist and self.mode != 'code': self.hist.mode = self.mode; self.hist.refresh()  # match a prompt_mode start
         self.ai_task = None      # the in-flight run_prompt task
         self.ai_sugg = None      # (text, cursor, suggestion): an Alt-. suggestion, valid while the buffer is unchanged
-        self.cell_outputs = None # raw (msg_type, content) records of the running cell, for ctx + persistence
+        self.cell_outputs = None # nbformat-shaped output records of the running cell, for ctx + persistence
         self._cycle = dict(idx=-1, resp='')  # alt-shift-up/down cycling over the last reply's fenced blocks
         self.fg_job = None       # (shell, mirror) while a borrow owns the terminal (SIGWINCH forwards here)
         self.shell = None        # the persistent shell Job (lazy; respawns after `exit`)
@@ -269,29 +269,30 @@ class App:
         self.comp.tty.write(transmit)
         self.comp.print_block(Text.from_ansi(placeholder), gutter=_gutter('image'), tag='image', source=f'[image {w}x{h}px]')
 
-    def on_out(self, msg_type, c):
-        if self.cell_outputs is not None: self.cell_outputs.append((msg_type, c))  # the cell record: ctx + persistence
-        if msg_type == 'stream':
+    def on_out(self, c):
+        ot = c.get('output_type')
+        if self.cell_outputs is not None: self.cell_outputs.append(c)  # the cell record: ctx + persistence
+        if ot == 'stream':
             if self.stream is None: self.stream = self.comp.print_block(gutter=_gutter('out'), tag='out', collapse_at=self.collapse_at)
             txt = _text(c.get('text')).rstrip('\n')
             if txt: self.comp.extend(self.stream, Text(txt, style='red') if c.get('name') == 'stderr' else txt)
             self.stream.source = (self.stream.source or '') + _text(c.get('text'))
             return
         self.stream = None  # any non-stream output closes the growing block: only the LAST block can grow, and later stream text starts a fresh one (Jupyter's separate output areas)
-        if msg_type in ('execute_result', 'display_data'):
+        if ot in ('execute_result', 'display_data'):
             data = c.get('data', {})
             mime = next((m for m in ('image/png', 'image/jpeg') if m in data), None)
             if mime:
                 img = base64.b64decode(data[mime])
                 # Jupyter renders a same-cell `fig` twice (flush display_data + execute_result repr);
                 # suppress only a byte-identical execute_result repeat -- distinct images all render
-                if not (msg_type == 'execute_result' and hash(img) in self.cell_imgs):
+                if not (ot == 'execute_result' and hash(img) in self.cell_imgs):
                     self.cell_imgs.add(hash(img))
                     self.show_image(img)
             elif 'text/plain' in data:
                 t = _text(data['text/plain'])
                 self.comp.print_block(t, gutter=_gutter('result'), tag='result', collapse_at=self.collapse_at, source=t)
-        elif msg_type == 'error':
+        elif ot == 'error':
             tb = Text.from_ansi('\n'.join(c.get('traceback', [])))
             self.comp.print_block(tb, gutter=_gutter('error'), tag='error', source=tb.plain)  # errors always print open
 
@@ -322,16 +323,20 @@ class App:
         finally: self.stdin_fut = None
 
     async def _ensure_shell(self):
-        """The persistent shell, spawned lazily on first use: interactive bash as session leader
-        of its own pty, so `cd`/exports/aliases and the jobs table (`fg`/`bg`/`jobs`/ctrl-Z)
-        persist and belong to the shell. The first-prompt relay absorbs rc noise; between
-        borrows a drain task pumps the pty (bg job output) into a rolling mirror."""
+        """The persistent shell, spawned lazily on first use: an owned gateway terminal beside the
+        kernel (fresh per session, deleted on exit), so `cd`/exports/aliases and the jobs table
+        (`fg`/`bg`/`jobs`/ctrl-Z) persist and belong to the shell. The first-prompt relay absorbs
+        rc noise; between borrows a drain task pumps the channel (bg job output) into a rolling mirror."""
         if self.shell is not None: return
-        self.shell = spawn_shell(size=self.tty.size, cwd=await self._kernel_cwd())
+        try: self.shell = await GateShell(self.k.url, size=self.tty.size, cwd=await self._kernel_cwd()).start()
+        except Exception as e:
+            self.shell = None
+            raise RuntimeError(f'shell failed to start: {e}')
         self.shell_pwd = None
         boot = pyghostty.Terminal(*self.tty.size)
-        res = await relay_shell(self.shell, mirror=boot)
+        res = await self.shell.relay(mirror=boot)
         if res == 'eof':
+            await self.shell.close()
             self.shell = None
             raise RuntimeError('shell failed to start')
         self.shell_pwd = res[2]
@@ -339,7 +344,7 @@ class App:
 
     def _start_drain(self):
         self._shdrain_mirror = pyghostty.Terminal(*self.tty.size)
-        self._shdrain = asyncio.ensure_future(relay_shell(self.shell, mirror=self._shdrain_mirror))
+        self._shdrain = self.comp.spawn(self.shell.relay(mirror=self._shdrain_mirror), name='shdrain')
 
     async def _stop_drain(self):
         "Take the pty back from the drain; anything a bg job printed while we were away becomes a block."
@@ -352,7 +357,7 @@ class App:
             blk = self.comp.print_block(Text(left, style='dim'), gutter=_gutter('out'), tag='out',
                                         collapse_at=self.collapse_at, source=left)
             if self.assistant is not None:
-                m = self.assistant.add_cell('!# background output', [('stream', dict(name='stdout', text=left + '\n'))])
+                m = self.assistant.add_cell('!# background output', [dict(output_type='stream', name='stdout', text=left + '\n')])
                 if m is not None: blk.msg_id = m.id  # stamped here so the enclosing exchange's stamp skips it
 
     async def run_job(self, cmd, record=True):
@@ -369,19 +374,20 @@ class App:
         self.comp.release()
         self.tty.raw()
         self.fg_job = (self.shell, mirror)
-        os.write(self.shell.master_fd, cmd.encode() + b'\n')
-        try: res = await relay_shell(self.shell, self.tty.write, mirror=mirror, in_fd=fd)
+        self.shell.write(cmd.encode() + b'\n')
+        try: res = await self.shell.relay(self.tty.write, mirror=mirror, in_fd=fd)
         finally:
             self.fg_job = None
             self.tty.cooked()
-            self.comp.reanchor()
+            await self.comp.reanchor()
             if reading: loop.add_reader(fd, self._read_tty)
         resid = mirror.contents().rstrip()
         if res == 'eof':  # the shell itself exited (`exit`, or death): respawn fresh on next use
-            finish_job(self.shell)
-            self.shell = None
+            sh, self.shell = self.shell, None
+            await sh.close()  # delete the dead terminal's registry entry
             if record: self._record_shell_cell(cmd, resid, 0)
-            return self._job_note('shell exited; a fresh one starts on the next shell command')
+            why = f'shell connection lost: {sh.error!r}' if sh.error else 'shell exited'
+            return self._job_note(f'{why}; a fresh one starts on the next shell command')
         _, ec, pwd = res
         if record:
             self._record_shell_cell(cmd, resid, ec)
@@ -413,22 +419,14 @@ class App:
         "The residue records as an ordinary `!cmd` cell: model-only block (its bytes are already on glass) + dialog cell."
         if resid: self.comp.record_block(resid, gutter=_gutter('out'), tag='out', collapse_at=self.collapse_at, source=resid)
         if self.assistant is not None:
-            outs = [('stream', dict(name='stdout', text=resid + '\n'))] if resid else []
-            if ec: outs.append(('stream', dict(name='stderr', text=f'[exit {ec}]\n')))
+            outs = [dict(output_type='stream', name='stdout', text=resid + '\n')] if resid else []
+            if ec: outs.append(dict(output_type='stream', name='stderr', text=f'[exit {ec}]\n'))
             self.assistant.add_cell(f'!{cmd}', outs)
 
     async def _sync_kernel_cwd(self, pwd):
         "cwd flows shell -> kernel after each shell command, so the two worlds agree about where you are."
         try: await self.k.kc.reply(f"import os; os.chdir({pwd!r})", silent=True, store_history=False, timeout=5)
         except Exception: pass
-
-    def _shell_children(self):
-        "Live children of the persistent shell (the quit gate's evidence), as 'pid name' lines."
-        if self.shell is None: return []
-        try:
-            out = subprocess.run(['pgrep', '-l', '-P', str(self.shell.pid)], capture_output=True, text=True).stdout
-            return [l for l in out.splitlines() if l.strip()]
-        except Exception: return []
 
     async def attach_assistant(self, resume=None, load=None, fresh=False):
         """Wire the AI side to the live kernel: bridge + tools, a session file under `./.ipyai/sessions/`,
@@ -469,7 +467,7 @@ class App:
             try: reply = dict(req=d.get('req'), text=self._ipyai_cmd(list(d.get('cmd') or [])))
             except Exception as e: reply = dict(req=d.get('req'), error=str(e))
             self.k.kc._exec_req('comm_msg', content=dict(comm_id=self._ipyai_comm, data=reply))
-            if self._load_codes: asyncio.ensure_future(self.run_loaded())  # after the ack: the magic holds the kernel until the reply lands
+            if self._load_codes: self.comp.spawn(self.run_loaded(), name='run-loaded')  # after the ack: the magic holds the kernel until these run
 
     def _ipyai_cmd(self, args):
         "One %ipyai command against app/assistant state; returns the ack text. Settings are session-only."
@@ -513,7 +511,7 @@ class App:
     def _replay_output(self, o):
         "Render one stored nbformat output: the dict shapes match iopub content, so on_out replays them directly."
         ot = o.get('output_type')
-        if ot in ('stream', 'display_data', 'execute_result', 'error'): self.on_out(ot, o)
+        if ot in ('stream', 'display_data', 'execute_result', 'error'): self.on_out(o)
 
     def _replay_reply(self, response):
         "Render a stored reply through the same block machinery: fmt2hist recovers text and tool parts."
@@ -592,14 +590,14 @@ class App:
         for code in codes: await self.k.run(code, self._silent_out)
         self.paint()
 
-    def _silent_out(self, msg_type, c):
+    def _silent_out(self, c):
         "Output handler for `run_loaded`: only errors surface (errors always print open)."
-        if msg_type == 'error':
+        if c.get('output_type') == 'error':
             tb = Text.from_ansi('\n'.join(c.get('traceback', [])))
             self.comp.print_block(tb, gutter=_gutter('error'), tag='error', source=tb.plain)
 
     async def do_complete(self):
-        matches, start = await self.k.complete(self.buf.text, self.buf.cursor)
+        matches, start = await self.k.kc.complete(self.buf.text, self.buf.cursor)
         self.tip = None
         if matches:
             m = CompletionMenu(self.buf, matches, start)
@@ -622,7 +620,7 @@ class App:
         if sigs and isinstance(sigs, list):
             s = sigs[0]
             self.tip = Signature(s['label'], [p['desc'] for p in s['params']], s.get('idx'), s.get('doc', ''))
-        elif text := await self.k.inspect(self.buf.text, self.buf.cursor):
+        elif text := await self.k.kc.inspect(self.buf.text, self.buf.cursor):
             self.tip = Tooltip(Text.from_ansi(text))
         self.paint()
 
@@ -652,7 +650,9 @@ class App:
         q, self._pending = self._pending, None
         for ev in q:
             if isinstance(ev, str): self.on_paste(ev)
-            else: self.on_key(ev)
+            else:
+                r = self.on_key(ev)
+                if asyncio.iscoroutine(r): self.comp.spawn(r, name='replayed-key')  # same contract as the compositor's dispatcher
 
     async def on_enter(self):
         """Routed Enter (the `.`/`;`/`!`/`%` dispatch): prompts always submit -- English is never
@@ -671,7 +671,7 @@ class App:
                 self._submit(text, payload, sh=True)
                 run = self.run_job(payload)
             else:
-                status, indent = await self.k.check(payload)
+                status, indent = await self.k.kc.check(payload)
                 if self.buf.text != text or self.busy: return  # changed or a run started mid-flight: stale decision
                 if status == 'incomplete': self.buf.insert('\n' + ('' if self._pending else indent))  # a burst carries its own indentation
                 else:
@@ -857,7 +857,7 @@ class App:
         elif k.name == 'enter' and self.buf.text and not self.busy:
             tv.leave()  # Enter with content submits AND returns to the live screen
             self._pending = []
-            asyncio.get_running_loop().create_task(self.on_enter())
+            self.comp.spawn(self.on_enter(), name='run')
             self.paint()
         elif k.name == 'enter':
             tv.toggle_current()
@@ -893,16 +893,10 @@ class App:
         if self.tv.active: return self._tv_key(k)
         if self.picker is not None: return self._picker_key(k)
         if k.name == 'ctrl+d' and not self.buf.text:
-            kids = self._shell_children()
-            if kids and not self._quit_warned:  # bash's convention: warn once, an immediate second C-D quits
+            if self.shell is not None and not self._quit_warned:  # bash's convention: warn once, an immediate second C-D quits
                 self._quit_warned = True
-                self._job_note(f'you have {len(kids)} shell job(s): ' + '; '.join(kids) + '  (C-D again quits and kills them)')
+                self._job_note('the shell (and any jobs in it) closes with the app  (C-D again quits)')
                 return
-            if self.shell is not None:  # a window-close: the shell's process group gets SIGHUP, taking its jobs
-                try:
-                    os.killpg(self.shell.pgid, signal.SIGHUP)
-                    os.killpg(self.shell.pgid, signal.SIGCONT)
-                except ProcessLookupError: pass
             self._dismiss()
             self.paint()  # one clean final frame: transient UI must never ink as exit debris
             self.done.set()
@@ -915,7 +909,7 @@ class App:
         if k.name == 'ctrl+o':
             live = [b for b in self.comp.blocks.values() if not b.committed]
             if live: self.comp.toggle(live[-1])
-        elif k.name == 'f2': asyncio.get_running_loop().create_task(self.edit_buffer())
+        elif k.name == 'f2': return self.edit_buffer()
         elif k.name == 'alt+r': self._recall_last()  # retry: recall the last exchange, submit REPLACES it (alt-up stays history)
         elif k.name == 'escape' and self.retry is not None:
             self.retry = None  # disarm: the composer keeps its text, submits append again
@@ -924,8 +918,7 @@ class App:
             self._set_mode(dict(p='prompt', c='code', s='shell')[k.name[4]])
             self._dismiss()
         elif k.name == 'alt+.':
-            if self.buf.text.strip() and not self.busy and self.assistant is not None:
-                asyncio.get_running_loop().create_task(self.do_ai_suggest())
+            if self.buf.text.strip() and not self.busy and self.assistant is not None: return self.do_ai_suggest()
         elif k.name == 'alt+W':
             bs = self._reply_blocks()
             if bs: self.buf.insert('\n'.join(bs))
@@ -949,13 +942,11 @@ class App:
             self.stdin_fut.set_result(text)
         elif k.name == 'enter' and self.buf.text and not self.busy:
             self._pending = []
-            asyncio.get_running_loop().create_task(self.on_enter())
+            return self.on_enter()
         elif k.name == 'alt+enter':  # always a newline: the codex/Claude convention
             self.buf.insert('\n')
-        elif k.name == 'tab' and self.buf.text and not self.k.busy:
-            asyncio.get_running_loop().create_task(self.do_complete())
-        elif k.name == 'shift+tab' and self.buf.text and not self.k.busy:
-            asyncio.get_running_loop().create_task(self.do_inspect())
+        elif k.name == 'tab' and self.buf.text and not self.k.busy: return self.do_complete()
+        elif k.name == 'shift+tab' and self.buf.text and not self.k.busy: return self.do_inspect()
         elif k.name in ('up', 'alt+up'):
             self._dismiss()
             if not (k.name == 'up' and self.buf.handle(k)) and self.hist:
@@ -973,8 +964,9 @@ class App:
         self.paint()
 
     def on_sigint(self):
+        "The ctrl-C policy, reached as a key: in-band at rest, synthesized by the compositor's SIGINT handler otherwise."
         if self.assistant is not None and self.assistant.cancel_turn(): return  # ctrl-C stops the AI turn first
-        if self.k.busy: asyncio.get_running_loop().create_task(self.k.interrupt())
+        if self.k.busy: self.comp.spawn(self.k.interrupt(), name='interrupt')
         else:
             self.buf.clear()
             self.ai_sugg = None
@@ -982,36 +974,43 @@ class App:
 
     def _read_tty(self): self.comp.on_bytes(os.read(self.tty.fd, 4096))
 
+    def _task_error(self, e, t):
+        "A spawned background task failed: an error block beats a stderr traceback through the raw-mode screen."
+        self.comp.print_block(Text(f'{t.get_name()} failed: {e!r}', style='red'), gutter=_gutter('error'), tag='error')
+        self.paint()
+
+    def _resized(self):
+        "The whole WINCH response (comp.on_resize): forward to shell/job, repaint only when we own the screen."
+        if self.shell is not None and self.fg_job is None:
+            self.shell.resize(*self.tty.size)   # idle shell follows the terminal (its pty winsize WINCHes children)
+        if self.fg_job is not None:
+            job, mirror = self.fg_job
+            job.resize(*self.tty.size)
+            mirror.resize(*self.tty.size)
+            return  # the job owns the screen; the compositor adopts the new size at reanchor
+        if self.tv.active: self.tv.leave()  # a rewrap invalidates the view; re-enter is one keystroke
+        self.comp.resize()  # synchronous now: adopt size + repaint from the model
+        self.paint()    # then rebuild the tail at the new width
+
     async def run(self):
-        "The real-terminal main loop: tty reader, signal handlers, escape-timeout ticker."
+        "The real-terminal main loop: tty reader, the compositor's signals, escape-timeout ticker."
         loop = asyncio.get_running_loop()
         loop.add_reader(self.tty.fd, self._read_tty)
-        loop.add_signal_handler(signal.SIGINT, self.on_sigint)
-        def resized():
-            if self.shell is not None and self.fg_job is None:
-                self.shell.resize(*self.tty.size)   # idle shell follows the terminal (its pty winsize WINCHes children)
-            if self.fg_job is not None:
-                job, mirror = self.fg_job
-                job.resize(*self.tty.size)
-                mirror.resize(*self.tty.size)
-                return  # the job owns the screen; the compositor adopts the new size at reanchor
-            if self.tv.active: self.tv.leave()  # a rewrap invalidates the view; re-enter is one keystroke
-            self.comp.resize()  # synchronous now: adopt size + repaint from the model
-            self.paint()    # then rebuild the tail at the new width
-        loop.add_signal_handler(signal.SIGWINCH, resized)
+        self.comp.on_resize = self._resized
+        self.comp.on_task_error = self._task_error
         async def ticker():
             while True:
                 await asyncio.sleep(0.2)
                 self.comp.flush_input()
                 if self.busy and not self.tv.active: self.paint()  # the throbber cell animates on the ticker's clock
-        t = asyncio.ensure_future(ticker())
+        t = self.comp.spawn(ticker(), name='ticker')
         try:
             self.paint()
             await self.done.wait()
         finally:
             t.cancel()
             loop.remove_reader(self.tty.fd)
-            for s in (signal.SIGINT, signal.SIGWINCH): loop.remove_signal_handler(s)
+            self.comp.stop()
 
 def _sessions_text(rows):
     "Past-session rows as the table %ipyai sessions and --sessions both show."
@@ -1049,6 +1048,7 @@ async def main(
     t.write('\x1b[?1000;1006h\x1b[?2004h')  # SGR mouse + bracketed paste
     try:
         app = App(t, cfg=cfg)
+        await app.comp.start()  # async now: the CPR await, and the compositor takes WINCH/INT/TERM/HUP
         app.detect_kitty()
         if cfg.get('code_theme', 'auto') == 'auto': app.detect_theme()
         kid = kernel or ''
@@ -1067,3 +1067,4 @@ async def main(
         t.write('\x1b[?2004l\x1b[?1000;1006l\r\n')
         t.restore()
         if app.k.kc is not None: await app.k.close()
+        if app.shell is not None: await app.shell.close()  # the owned terminal dies with the session
