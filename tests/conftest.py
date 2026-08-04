@@ -34,11 +34,10 @@ def temp_config_paths(tmp_path, monkeypatch):
 
 _KERNEL_BOOTSTRAP = ("from IPython import get_ipython\n"
     "_ip = get_ipython()\n"
+    "try: _ip.extension_manager.load_extension('ipykernel_helper.core')\n"
+    "except Exception: pass\n"
     "try: _ip.extension_manager.load_extension('safepyrun')\n"
-    "except Exception: pass\n"
-    "try: _ip.extension_manager.load_extension('ipythonng')\n"
-    "except Exception: pass\n"
-    "_ip.history_manager.db_log_output = True\n")
+    "except Exception: pass\n")
 
 
 async def _prepare_kernel_bridge(client):
@@ -51,42 +50,50 @@ async def _prepare_kernel_bridge(client):
 
 
 async def _snapshot_globals(bridge):
-    exprs,_ = await bridge._exec("", expressions={"_r": "[k for k in globals() if not k.startswith('_')]"})
+    exprs = await bridge._exec("", expressions={"_r": "[k for k in globals() if not k.startswith('_')]"})
     return set(exprs.get("_r") or [])
 
 
 async def _clear_extras(bridge, baseline):
-    exprs,_ = await bridge._exec("", expressions={
+    exprs = await bridge._exec("", expressions={
         "_r": "[k for k in globals() if not k.startswith('_') and k not in %r]" % list(baseline)})
     extras = exprs.get("_r") or []
     if extras: await bridge._exec("\n".join(f"globals().pop({n!r}, None)" for n in extras))
 
 
 @pytest.fixture(scope="session")
-def session_kernel():
-    from jupyter_client.manager import KernelManager
-    from jupyter_client.asynchronous.client import AsyncKernelClient
-    km = KernelManager()
-    km.start_kernel(extra_arguments=["--HistoryManager.enabled=True"])
+def gateway():
+    "An in-thread jupygate for the whole test session (the clikernel test pattern)."
+    from jupygate.core import create_app, serve
+    server = serve(create_app(), port=0, in_thread=True)   # port 0: a free port per xdist worker
+    yield server.url
+    server.should_exit = True
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _gateway_env(gateway):
+    "Point every bare KernelSession() at the test gateway: no test may ever touch a live jupygate."
+    os.environ['IPYAI_GATEWAY'] = gateway
+    yield
+    os.environ.pop('IPYAI_GATEWAY', None)
+
+
+@pytest.fixture(scope="session")
+def session_kernel(gateway):
+    from ipyai.kernel import KernelSession
     loop = asyncio.new_event_loop()
 
     async def _setup():
-        client = AsyncKernelClient()
-        client.load_connection_file(km.connection_file)
-        client.start_channels()
-        await client.wait_for_ready(timeout=30)
-        bridge = await _prepare_kernel_bridge(client)
+        ks = KernelSession(url=gateway)
+        await ks.start()
+        bridge = await _prepare_kernel_bridge(ks.kc)
         baseline = await _snapshot_globals(bridge)
-        return client, bridge, baseline
+        return ks, bridge, baseline
 
-    client,bridge,baseline = loop.run_until_complete(_setup())
-    try: yield dict(manager=km, client=client, bridge=bridge, baseline=baseline, loop=loop)
+    ks,bridge,baseline = loop.run_until_complete(_setup())
+    try: yield dict(ks=ks, client=ks.kc, bridge=bridge, baseline=baseline, loop=loop)
     finally:
-        try: loop.run_until_complete(client.stop_channels())
-        except Exception:
-            try: client.stop_channels()
-            except Exception: pass
-        try: km.shutdown_kernel(now=False)
+        try: loop.run_until_complete(ks.close())
         except Exception: pass
         try: loop.close()
         except Exception: pass

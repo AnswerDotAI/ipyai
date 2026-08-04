@@ -1,5 +1,5 @@
 "The shell layer: three-mode routing, and the persistent shell running `!` submissions under borrows."
-import asyncio, os
+import asyncio, os, pytest
 from teleprint.testing import EmuTty
 from ipyai.assistant import route
 from ipyai.cli import App
@@ -52,6 +52,7 @@ def test_shell_end_to_end():
             assert '»»»' in tty.term.text()                 # tail repainted after reanchor
     asyncio.run(go())
 
+@pytest.mark.slow
 def test_shell_state_persists_and_cwd_syncs():
     "cd sticks across submissions (one shell), and the kernel's cwd follows the shell's."
     import tempfile

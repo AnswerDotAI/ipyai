@@ -1,48 +1,43 @@
-"History provider: IPython's real history.sqlite, read read-only via apsw (faithful SQLite semantics: the kernel's writer thread owns the file)."
-import apsw
-from pathlib import Path
-
-def hist_path():
-    return Path.home()/'.ipython'/'profile_default'/'history.sqlite'
+"History provider: recent inputs mined from this directory's session files, mode-scoped by message type."
+import os
+from aidialog.ipynb import read_ipynb
+from .session import sessions_dir
 
 class History:
-    "Newest-first unique recent inputs: arrow navigation with a stash, and prefix suggestions for ghost text."
-    def __init__(self, path=None, recent=2000, cwd=None, mode='code'):
-        self.con = apsw.Connection(str(path or hist_path()), flags=apsw.SQLITE_OPEN_READONLY)
-        self.con.setbusytimeout(250)
-        self.recent, self.cwd, self.mode = recent, cwd, mode
+    """Newest-first unique recent inputs: arrow navigation with a stash, and prefix suggestions for
+    ghost text. `mode` picks the source, so each composer mode navigates its own past: 'code' reads
+    code messages, 'prompt' the prompts, 'shell' the recorded `!` cells (leading `!` stripped, `!#`
+    pseudo-cells excluded). Directory scoping is the filesystem: only this root's `.ipyai/sessions/`
+    files are read, so unrelated dirs never ghost-suggest here."""
+    def __init__(self, root='.', recent=2000, mode='code', nfiles=20):
+        self.dir, self.recent, self.mode, self.nfiles = sessions_dir(root), recent, mode, nfiles
         self.pos, self.stash, self.items = None, '', []
         self.refresh()
 
+    def _mine(self, m):
+        "The history item a message contributes to the current mode, or None."
+        if self.mode == 'prompt': return m.content if m.msg_type == 'prompt' else None
+        if m.msg_type != 'code': return None
+        sh = m.content.startswith('!')
+        if self.mode == 'shell': return m.content[1:] if sh and not m.content.startswith('!#') else None
+        return None if sh else m.content
+
     def refresh(self):
-        """Reload the newest-first unique items. `mode` picks the source, so each composer mode
-        navigates its own past: 'code' reads the kernel's history table, 'prompt' the ipyai_prompts
-        store, 'shell' the recorded `!` cells (leading `!` stripped, `!#` pseudo-cells excluded) --
-        the three are naturally disjoint, since prompts and `!` lines never execute in the kernel.
-        With `cwd`, only sessions annotated to this directory count (the `ipyai_sessions` JOIN) --
-        unannotated sessions (bare IPython, test runs) fall outside, which also kills junk
-        ghost-suggestions from unrelated dirs; before any ipyai session ever ran here, history
-        simply starts empty (`add_local` fills it live)."""
-        scope = 'session IN (SELECT session FROM ipyai_sessions WHERE cwd = ?)'
-        try:
-            if self.mode == 'prompt': q, args = f'SELECT prompt FROM ipyai_prompts WHERE {scope}', (self.cwd,)
-            elif self.mode == 'shell':
-                q = f"SELECT substr(source, 2) FROM ipyai_cells WHERE source LIKE '!%' AND source NOT LIKE '!#%' AND {scope}"
-                args = (self.cwd,)
-            elif self.cwd is not None: q, args = f'SELECT source_raw FROM history WHERE {scope}', (self.cwd,)
-            else: q, args = 'SELECT source_raw FROM history', ()
-            rows = self.con.execute(f'{q} ORDER BY session DESC, line DESC LIMIT ?', (*args, self.recent)).fetchall()
-        except apsw.SQLError:  # no ipyai tables yet: no ipyai ever ran against this db
-            rows = []
+        "Reload newest-first unique items from the newest `nfiles` session files."
+        files = sorted(self.dir.glob('*.ipynb'), key=os.path.getmtime, reverse=True) if self.dir.exists() else []
         seen, fresh = set(), []
-        for (s,) in rows:
-            if s and s not in seen:
-                seen.add(s)
-                fresh.append(s)
+        for p in files[:self.nfiles]:
+            dlg = read_ipynb(p)
+            if dlg is None: continue
+            for m in reversed(dlg.messages):
+                if (s := self._mine(m)) and s not in seen:
+                    seen.add(s)
+                    fresh.append(s)
+                if len(fresh) >= self.recent: break
         self.items = fresh
 
     def add_local(self, source):
-        "Prepend a just-submitted line immediately: the kernel's own write can lag its flush thread."
+        "Prepend a just-submitted line immediately: cheaper than a re-read, and correct before any save lands."
         source = source.rstrip('\n')
         if not source: return
         if source in self.items: self.items.remove(source)
@@ -55,7 +50,7 @@ class History:
                      if s.startswith(prefix) and s != prefix), '')
 
     def prev(self, current):
-        "Older item (stashing the live edit and refreshing from the db on the first step), or None."
+        "Older item (stashing the live edit and refreshing from disk on the first step), or None."
         if self.pos is None:
             self.refresh()
             if not self.items: return None

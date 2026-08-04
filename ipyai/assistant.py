@@ -4,15 +4,14 @@ The session IS a Dialog: executed cells append as code/note messages (with verba
 outputs), AI turns append as prompt messages whose output holds the reply in fastllm's canonical
 formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every model is one
 fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
-import asyncio, ast, os, re, subprocess
-from aidialog.dialog import Dialog, prompt_output
-from aidialog.hist import dlg2hist   # also activates the Message.to_parts patch
+import asyncio, ast, os
+from aidialog.dialog import Dialog, INTERRUPTED
+from aidialog.hist import dlg2hist, get_exprs, vars_hist, warning_tag
+from fastcore.xml import to_xml
 from .config import load_config, load_sysp, SUGGEST_SP
 
 LAST_PROMPT = '_ai_last_prompt'
 LAST_RESPONSE = '_ai_last_response'
-_var_re = re.compile(r"\$`(\w+(?:\([^`]*\))?)`")
-_shell_re = re.compile(r"(?<![\w`])!`([^`]+)`")
 _MISSING = object()
 
 def route(text, mode='code'):
@@ -56,18 +55,15 @@ async def _eval_vars(names, bridge):
         out[name] = val
     return out
 
-def _format_var_xml(values):
-    return ''.join(f'<variable name="{n}" type="{type(v).__name__}">{v}</variable>'
-                   for n, v in sorted(values.items()) if v is not _MISSING and v is not None)
-
-def _run_shell_refs(cmds):
-    if not cmds: return ''
-    parts = []
+async def _eval_shell_refs(cmds, bridge):
+    "Evaluate `!` refs via the kernel's own `getoutput` (stdout+stderr, kernel cwd, `var_expand`), keyed by full ref form."
+    if not cmds or bridge is None: return {}
+    out = {}
     for cmd in sorted(cmds):
-        try: out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30).stdout.rstrip()
-        except Exception as e: out = f'Error: {e}'
-        parts.append(f'<shell cmd="{cmd}">{out}</shell>')
-    return ''.join(parts)
+        try: r = await bridge.read_var(f'get_ipython().getoutput({cmd!r}).n')
+        except Exception as e: r = f'Error: {e}'
+        out[f'!`{cmd}`'] = r
+    return out
 
 class _BridgeNS(dict):
     """Dict-shaped proxy routing fastllm's ns-based tool dispatch through the ToolRegistry bridge:
@@ -98,8 +94,12 @@ class Assistant:
         self.last_response = ''
         self.last_use = None     # fastllm UsageStats from the latest turn (status-bar material)
         self.last_req_use = None  # UsageStats of the final request alone: its size is the current ctx (`last_use` sums a whole turn)
-        self.store = None        # optional Store (persistence); set by the app after kernel start
+        self.session = None      # optional Session (persistence); set by the app after kernel start
         self._consumer = None    # the in-flight turn's stream-consumer task, cancel_turn's target
+
+    def save(self):
+        "Persist the dialog to its session file (whole-file write, atomic); a no-op without a session."
+        if self.session: self.session.save(self.dlg, model=self.model, think=self.think)
 
     def reset(self):
         "Start a fresh conversation: new empty Dialog, counters cleared. Kernel state is untouched."
@@ -137,29 +137,25 @@ class Assistant:
     def add_cell(self, source, outputs):
         "Record one executed cell: raw iopub (msg_type, content) records become an nbformat code/note message, returned (None when nothing records)."
         if source.lstrip().startswith('%ipyai'): return  # housekeeping commands are not part of the conversation
-        from .store import nbformat_outputs
-        outs = nbformat_outputs(outputs)
+        from fastcore.nbio import msgs2outs
+        outs = msgs2outs([dict(msg_type=mt, content=c) for mt, c in outputs])
         if _is_note(source): m = self.dlg.mk_message(_note_str(source), msg_type='note')
         else: m = self.dlg.mk_message(source, msg_type='code', output=outs)
         self.n_cells += 1
-        m.store_line = self.n_cells  # handle for later metadata updates (hide/pin toggles)
-        if self.store: self.store.save_cell(self.n_cells, source, outputs)
+        self.save()
         return m
 
-    async def _ref_parts(self):
-        "`$`var``/`!`cmd`` expansions gathered across every prompt in the dialog, evaluated now."
-        names, cmds = set(), set()
-        for m in self.dlg.messages:
-            if m.msg_type == 'prompt':
-                names |= set(_var_re.findall(m.content))
-                cmds |= set(_shell_re.findall(m.content))
+    async def _vars_turn(self):
+        """The synthetic variables turn plus any missing-var warning: `$` and `!` refs both evaluated
+        in the kernel (`!` via its own `getoutput`, keyed by full ref form), merged for `vars_hist`."""
+        names = get_exprs(self.dlg.messages)
+        cmds = get_exprs(self.dlg.messages, sigil='!')
         values = await _eval_vars(names, self.bridge)
         missing = sorted(n for n, v in values.items() if v is _MISSING)
-        parts = []
-        if missing: parts.append(f"<warnings>The following symbols were referenced but aren't defined in the interpreter: {', '.join(missing)}</warnings>")
-        if xml := _format_var_xml(values): parts.append(xml)
-        if xml := _run_shell_refs(cmds): parts.append(xml)
-        return parts
+        ns = {n: values[n] for n in names if values.get(n) is not _MISSING and values.get(n) is not None}
+        ns |= await _eval_shell_refs(cmds, self.bridge)
+        warn = warning_tag(f"The following symbols were referenced but aren't defined in the interpreter: {', '.join(missing)}") if missing else None
+        return vars_hist(self.aim_info, ns), (to_xml(warn, do_escape=False) if warn else None)
 
     def cancel_turn(self):
         "Stop the in-flight AI turn (ctrl-C): the consumer task is cancelled, not the caller."
@@ -179,7 +175,9 @@ class Assistant:
         pmsg = self.dlg.mk_message(prompt, msg_type='prompt')
         try:
             *hist, parts, _ = dlg2hist(self.dlg, self.aim_info)
-            parts = await self._ref_parts() + parts
+            vh, warn = await self._vars_turn()
+            hist = vh + hist
+            if warn: parts.insert(0, warn)
             tools = ((await self.tools.openai_schemas()) or None) if self.tools else None
             ns = _BridgeNS(self.tools) if tools else {}
             chat = self._make_chat(self.model, self.sp, tools=tools, ns=ns, hist=hist)
@@ -208,7 +206,7 @@ class Assistant:
             self._consumer = None
             if aclose := getattr(stream, 'aclose', None): await aclose()
         text = fmt.outp.strip()
-        if interrupted: text += '\n\n*[Response interrupted]*'  # ai_fmt strips this marker on replay
+        if interrupted: text += '\n\n' + INTERRUPTED  # ai_fmt strips this marker on replay
         pmsg.output = text    # the setter wraps prompt output and clears the ai_output cache
         self.last_response = text
         self.last_use = getattr(chat, 'use', None)
@@ -216,8 +214,7 @@ class Assistant:
         if self.bridge:
             try: await self.bridge.set_vars(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
             except Exception: pass
-        if self.store:
-            pmsg.store_id = self.store.save_prompt(prompt, '\n\n'.join(p for p in parts if isinstance(p, str)), text, self.n_cells)  # rowid: the handle for later metadata updates
+        self.save()
         return text
 
     def _recent_xml(self):

@@ -56,7 +56,7 @@ def test_ipyai_magic_assignment():
             await app.k.run('%load_ext ipyai.magic', lambda *a: None)
             app.comp.on_bytes(b'x = %ipyai think s\r')
             await _settle(app, lambda: not app.k.busy and app.assistant.think == 's')
-            assert await app.k.kc.eval_expr('str(x)') == 'think = s'
+            assert await app.k.kc.eval('str(x)', _call=False) == 'think = s'
     asyncio.run(go())
 
 def test_ipyai_magic_no_host():

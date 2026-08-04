@@ -1,6 +1,7 @@
 "cp3/cp4: routing, streaming reply rendering, the assistant end-to-end over a StubChat, paste bindings, ghost text."
 import asyncio
 from rich.text import Text
+from fastcore.xml import to_xml
 from aidialog.msg_parts import Part, PartType
 from teleprint.testing import EmuTty
 from ipyai.cli import App, _gutter
@@ -126,7 +127,7 @@ def test_prompt_flow_and_ctx():
         assert call['model'] == 'm' and call['think'] == 'l'
         sent = _parts_text(call)
         assert 'x = 41 + 1' in sent          # the cell rides in the prompt's user parts (dlg2hist)
-        assert call['msg'][-1] == 'what is x?'
+        assert call['msg'][-1].endswith('>what is x?</prompt>')  # the aidialog envelope wraps every prompt
         a = app.assistant
         assert [m.msg_type for m in a.dlg.messages] == ['code', 'prompt']
         assert a.last_response == 'The answer.'
@@ -235,7 +236,7 @@ def test_prompt_mode_ui():
         for _ in range(100):
             await asyncio.sleep(0.02)
             if stub.calls: break
-        assert stub.calls[0]['msg'][-1] == 'hello there'
+        assert stub.calls[0]['msg'][-1].endswith('>hello there</prompt>')
         app.comp.on_bytes(b'\x1bc')          # M-c: direct-select code mode (M-p is no longer a toggle)
         assert app.mode == 'code'
         assert tty.term.text().splitlines()[-1].startswith('»»»')
@@ -253,3 +254,23 @@ def test_ctx_usage_status():
     assert a.ctx_usage is None                 # known model but no turn yet: still no meter
     a.last_req_use = UsageStats(prompt_tokens=30000, completion_tokens=2000)
     assert a.ctx_usage == (32000, 256000)
+
+
+def test_shell_refs_go_through_kernel():
+    "`!`cmd`` refs evaluate via the bridge's getoutput expression, keyed by their ref form; `$` vars alongside."
+    from ipyai.assistant import _MISSING
+    class StubBridge:
+        def __init__(self): self.asked = []
+        async def read_var(self, expr):
+            self.asked.append(expr)
+            if expr.startswith('get_ipython().getoutput'): return 'shell-out'
+            return 42 if expr == 'x' else _MISSING
+    tty, app, stub = mk_app()
+    a = app.assistant
+    a.bridge = StubBridge()
+    a.dlg.mk_message('use $`x` and !`echo hi`', msg_type='prompt')
+    vh, warn = asyncio.run(a._vars_turn())
+    body = to_xml(vh[0][0]) if vh else ''
+    assert 'x' in body and '42' in body
+    assert '!`echo hi`' in body and 'shell-out' in body
+    assert any('getoutput' in e for e in a.bridge.asked)   # ! ran via the kernel, not subprocess

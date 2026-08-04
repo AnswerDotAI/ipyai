@@ -39,7 +39,7 @@ async def ipyai(line=''):
     %ipyai code_theme NAME        set the code highlight theme, future blocks only ('auto' redetects)
     %ipyai prompt                 toggle prompt mode (same as alt-p)
     %ipyai sessions               list past ipyai sessions for this directory
-    %ipyai reset                  start a fresh conversation (and a new resumable session row)
+    %ipyai reset                  start a fresh conversation (and a new resumable session file)
     %ipyai save PATH              export the session dialog as a .ipynb
     %ipyai load PATH              import a dialog .ipynb into the session
 
@@ -48,10 +48,6 @@ async def ipyai(line=''):
     release = getattr(getattr(ip, 'kernel', None), 'unlock', None)
     if release is None: raise RuntimeError('%ipyai needs an ipyai host (an ipymini kernel with unlock support)')
     cmd = line.split()
-    if cmd[:1] == ['reset']:
-        # The kernel-side half of reset: a fresh history session, whose number keys the host's new store row
-        ip.history_manager.new_session()
-        cmd = ['reset', str(ip.history_manager.session_number)]
     _state['n'] += 1
     req = _state['n']
     fut = asyncio.get_running_loop().create_future()
