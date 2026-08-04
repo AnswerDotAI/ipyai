@@ -49,6 +49,7 @@ Images render through kitty graphics with Unicode placeholders, so they survive 
 ```python
 %ipyai                        current settings and commands
 %ipyai model NAME             set the turn model
+%ipyai models                 list model vendors: credentials found, current one starred
 %ipyai suggest_model NAME     set the inline-suggestion model
 %ipyai think LEVEL            set think effort
 %ipyai code_theme NAME        set the code highlight theme ('auto' redetects)

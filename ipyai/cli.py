@@ -91,6 +91,7 @@ class App:
         self._quit_warned = False
         self.picker = None       # startup session-picker rows while open (an over transient; owns digits/Enter/n/Esc)
         self._ipyai_comm = None  # the kernel-side %ipyai comm id, set on comm_open
+        self._ack_open = False   # the next execute_result is a %ipyai ack: print it uncollapsed
         self._pending = None   # input queued while an enter decision's round-trip is in flight (see on_enter)
         self.stdin_fut = None  # a pending kernel input_request; Enter answers it (see _on_stdin)
         self.k.on_stdin = self._on_stdin
@@ -291,7 +292,9 @@ class App:
                     self.show_image(img)
             elif 'text/plain' in data:
                 t = _text(data['text/plain'])
-                self.comp.print_block(t, gutter=_gutter('result'), tag='result', collapse_at=self.collapse_at, source=t)
+                fold = None if self._ack_open else self.collapse_at
+                self._ack_open = False
+                self.comp.print_block(t, gutter=_gutter('result'), tag='result', collapse_at=fold, source=t)
         elif ot == 'error':
             tb = Text.from_ansi('\n'.join(c.get('traceback', [])))
             self.comp.print_block(tb, gutter=_gutter('error'), tag='error', source=tb.plain)  # errors always print open
@@ -466,6 +469,7 @@ class App:
             d = c.get('data', {})
             try: reply = dict(req=d.get('req'), text=self._ipyai_cmd(list(d.get('cmd') or [])))
             except Exception as e: reply = dict(req=d.get('req'), error=str(e))
+            else: self._ack_open = True  # the ack returns as the magic's result: asked-for info prints open, like errors
             self.k.kc._exec_req('comm_msg', content=dict(comm_id=self._ipyai_comm, data=reply))
             if self._load_codes: self.comp.spawn(self.run_loaded(), name='run-loaded')  # after the ack: the magic holds the kernel until these run
 
@@ -476,7 +480,7 @@ class App:
         if not args:
             s = [f'{k} = {getattr(a, k)}' for k in ('model', 'suggest_model', 'think')]
             s += [f'code_theme = {self.theme}', f'mode = {self.mode}', '',
-                  'commands: model | suggest_model | think | code_theme [VALUE], prompt, sessions, reset, save PATH, load PATH']
+                  'commands: model | suggest_model | think | code_theme [VALUE], prompt, sessions, models, reset, save PATH, load PATH']
             return '\n'.join(s)
         cmd, *rest = args
         if cmd in ('model', 'suggest_model', 'think'):
@@ -489,6 +493,8 @@ class App:
             self._set_mode('prompt' if self.mode != 'prompt' else 'code')
             self.paint()
             return f'mode = {self.mode}'
+        if cmd == 'models':
+            return _models_text(a.model)
         if cmd == 'sessions':
             return _sessions_text(list_sessions())
         if cmd == 'reset':
@@ -1021,6 +1027,20 @@ def _sessions_text(rows):
         when = time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))
         lines.append(f'{Path(path).stem[:8]:10}  {when:16}  {n:>7}  {fp}')
     return '\n'.join(lines)
+
+def _models_text(current=None):
+    "Vendor prefixes usable in model strings, with each one's credential source; * marks the current model's vendor."
+    from fastllm.acomplete import vendor_mapping
+    from importlib.metadata import entry_points
+    lines = [f"  {'Vendor':13} {'Ready':5}  Credentials"]
+    for v, (api, url, env, *auth) in vendor_mapping.items():
+        ok = bool(os.environ.get(env)) or bool(auth and Path(auth[0][0]).expanduser().exists())
+        cur = '* ' if current and current.startswith(f'{v}/') else '  '
+        lines.append(f"{cur}{v:13} {'yes' if ok else '-':5}  {env}" + (f' or {auth[0][0]}' if auth else ''))
+    for ep in entry_points(group='fastllm.apis'):
+        cur = '* ' if current and current.startswith(f'{ep.name}/') else '  '
+        lines.append(f"{cur}{ep.name:13} {'yes':5}  plugin: {ep.value.split('.')[0]}")
+    return '\n'.join(lines + ['', 'set with: %ipyai model VENDOR/NAME'])
 
 Think = str_enum('Think', 'l', 'm', 'h', 'x')
 
