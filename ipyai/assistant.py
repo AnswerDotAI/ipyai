@@ -6,6 +6,7 @@ formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every mo
 fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
 import asyncio, ast, os
 from aidialog.dialog import Dialog, INTERRUPTED
+from aidialog.msg_parts import Part, PartType
 from aidialog.hist import dlg2hist, get_exprs, is_nameerr, vars_hist, warning_tag
 from fastcore.xml import to_xml
 from .config import load_config, load_sysp, SUGGEST_SP
@@ -147,10 +148,10 @@ class Assistant:
 
     async def run_prompt(self, prompt, renderer):
         """One AI turn: append the prompt message, build history via `dlg2hist`, stream the chat through
-        `renderer` (a TurnRenderer) while an `AsyncStreamFormatter` tees the canonical stored form, then
-        land the reply in the message output and the kernel namespace. `cancel_turn` freezes the partial
-        mid-stream; the consumer runs as its own task so cancelling it leaves cleanup awaits running."""
-        from fastllm.chat import AsyncStreamFormatter
+        `renderer` (a TurnRenderer), then land the reply in the message output and the kernel namespace.
+        The stored form is `chat.full()`; an interrupt freezes the accumulated partial instead.
+        The consumer runs as its own task so cancelling it leaves cleanup awaits running."""
+        from fastllm.chat import StreamAccum
         prompt = (prompt or '').strip()
         if not prompt: return None
         pmsg = self.dlg.mk_message(prompt, msg_type='prompt')
@@ -166,10 +167,10 @@ class Assistant:
         except BaseException:
             self.dlg.remove_msgs([pmsg])   # the turn never started: a retry must not double the prompt
             raise
-        fmt = AsyncStreamFormatter()
+        acc = StreamAccum(chat)
         async def _consume():
             async for e in stream:
-                fmt.format_item(e)
+                acc(e)
                 renderer.event(e)
         self._consumer = asyncio.create_task(_consume(), name='stream-consumer')  # bare deliberately: its exception is consumed at the await below
         interrupted = False
@@ -186,7 +187,7 @@ class Assistant:
         finally:
             self._consumer = None
             if aclose := getattr(stream, 'aclose', None): await aclose()
-        text = fmt.outp.strip()
+        text = (acc.txt if interrupted else chat.full()).strip()
         if interrupted: text += '\n\n' + INTERRUPTED  # ai_fmt strips this marker on replay
         pmsg.output = text    # the setter wraps prompt output and clears the ai_output cache
         self.last_response = text
@@ -211,6 +212,6 @@ class Assistant:
         parts += ['</current-input>', 'Return only the suggestion text to insert immediately after the prefix.']
         chat = self._make_chat(self.suggest_model, SUGGEST_SP)
         rs = await chat('\n'.join(p for p in parts if p), stream=True)
-        try: return ''.join([(o.get('text') or '') async for o in rs if isinstance(o, dict)]).strip()
+        try: return ''.join([o.text or '' async for o in rs if isinstance(o, Part) and o.type==PartType.text]).strip()
         finally:
             if aclose := getattr(rs, 'aclose', None): await aclose()

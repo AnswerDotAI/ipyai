@@ -1,7 +1,7 @@
 "cp3/cp4: routing, streaming reply rendering, the assistant end-to-end over a StubChat, paste bindings, ghost text."
 import asyncio
 from fastcore.xml import to_xml
-from aidialog.msg_parts import Part, PartType
+from aidialog.msg_parts import Part, PartType, Msg, hist2fmt
 from teleprint.testing import EmuTty
 from ipyai.cli import App, _gutter
 from ipyai.reply import TurnRenderer
@@ -13,6 +13,8 @@ def mk_cfg(**kw):
 
 def tool_use(name, args, id='t1'): return Part(type=PartType.tool_use, data=dict(id=id, name=name, arguments=args, server=False))
 def tool_result(name, args, text, id='t1'): return Part(type=PartType.tool_result, text=text, data=dict(id=id, name=name, arguments=args, server=False))
+def text_part(t): return Part(type=PartType.text, text=t)
+def think_part(t): return Part(type=PartType.thinking, text=t)
 
 class StubChat:
     """Stands in for one fastllm AsyncChat: `await chat(msg, stream=True, ...)` yields the scripted
@@ -24,13 +26,20 @@ class StubChat:
     async def __call__(self, msg=None, stream=False, **call_kw):
         self.factory.calls.append(dict(self.kw, msg=msg, **call_kw))
         events, gate = self.factory.events, self.factory.gate
-        if self.kw.get('model') == 'cm': events = [dict(text=self.factory.suggestion)]
+        if self.kw.get('model') == 'cm': events = [text_part(self.factory.suggestion)]
         async def gen():
             for e in events:
                 await asyncio.sleep(0)
                 yield e
             if gate is not None: await gate.wait()
         return gen()
+
+    def full(self, **kw):
+        "The turn's canonical form, from the scripted parts via the real `hist2fmt`"
+        evs = [e for e in self.factory.events if isinstance(e, Part)]
+        aps = [e for e in evs if e.type in (PartType.text, PartType.tool_use)]
+        tps = [e for e in evs if e.type == PartType.tool_result]
+        return hist2fmt([Msg('assistant', aps)] + ([Msg('tool', tps)] if tps else []))
 
 class StubChatFactory:
     "Supplied as Assistant's chat_factory; scripts the turn stream and the suggestion model's reply."
@@ -70,7 +79,7 @@ def test_streaming_reply_blocks():
     app.paint()
     tr = TurnRenderer(app.comp, _gutter, collapse_at=5)
     for chunk in ['# He', 'ading\n\npara ', 'text\n\n```python\nx ', '= 1\nprint(x)\n```\n\ntail']:
-        tr.event(dict(text=chunk))
+        tr.event(text_part(chunk))
     tr.done()
     scr = tty.term.contents()
     for s in ('# Heading', 'para text', 'x = 1', 'print(x)', 'tail'):
@@ -99,9 +108,9 @@ def test_turn_events_interleave():
     app = App(tty, history=None)
     app.paint()
     tr = TurnRenderer(app.comp, _gutter, collapse_at=5)
-    for e in [dict(thinking='hmm\nlines'), dict(thinking='\nof thought'), dict(text='Check the value.\n\n'),
+    for e in [think_part('hmm\nlines'), think_part('\nof thought'), text_part('Check the value.\n\n'),
               tool_use('py', {'code': 'x*2'}), tool_result('py', {'code': 'x*2'}, '42'),
-              dict(text='The answer is 42.')]:
+              text_part('The answer is 42.')]:
         tr.event(e)
     tr.done()
     kinds = [(b.tag, b.collapsed) for b in app.comp.blocks.values()]
@@ -111,7 +120,7 @@ def test_turn_events_interleave():
 
 async def test_prompt_flow_and_ctx():
     "The routed prompt flow: ask block, reply blocks, dialog records the turn, ctx rides via dlg2hist."
-    tty, app, stub = mk_app(events=[dict(text='The answer.\n')])
+    tty, app, stub = mk_app(events=[text_part('The answer.\n')])
     app.paint()
     app.assistant.add_cell('x = 41 + 1', [dict(output_type='stream', name='stdout', text='')])
     app.comp.on_bytes(b'.what is x?\r')
@@ -142,8 +151,8 @@ async def test_prompt_flow_and_ctx():
 
 async def test_reply_stored_in_fastllm_form():
     "The formatter tee stores the canonical form: a tool round-trip lands as a details block in last_response."
-    tty, app, stub = mk_app(events=[dict(text='Look:\n'), tool_use('py', {'code': '1+1'}),
-                                    tool_result('py', {'code': '1+1'}, '2'), dict(text='Done.')])
+    tty, app, stub = mk_app(events=[text_part('Look:\n'), tool_use('py', {'code': '1+1'}),
+                                    tool_result('py', {'code': '1+1'}, '2'), text_part('Done.')])
     app.paint()
     app.comp.on_bytes(b'.check\r')
     for _ in range(100):
@@ -157,7 +166,7 @@ async def test_reply_stored_in_fastllm_form():
 
 async def test_interrupt_freezes_turn():
     gate = asyncio.Event()
-    tty, app, stub = mk_app(events=[dict(text='partial text so far')], gate=gate)
+    tty, app, stub = mk_app(events=[text_part('partial text so far')], gate=gate)
     app.paint()
     app.comp.on_bytes(b'.go\r')
     for _ in range(100):
@@ -215,7 +224,7 @@ async def test_ai_ghost_text():
     assert app.buf.suggestion == ''
 
 async def test_prompt_mode_ui():
-    tty, app, stub = mk_app(events=[dict(text='ok')], prompt_mode=True)
+    tty, app, stub = mk_app(events=[text_part('ok')], prompt_mode=True)
     app.paint()
     assert tty.term.text().splitlines()[-1].startswith('›››')  # the mode shows in the marker (trailing space trimmed by text())
     app.comp.on_bytes(b'hello there\r')  # plain Enter submits: English is never incomplete

@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [{name = "Jeremy Howard", email = "info@answer.ai"}]
 dependencies = ["fastcore>=1.12.31", "ipython>=9", "teleprint", "jupyasyncclient>=0.2.1", "ipymini", "rich", "safepyrun",
-    "python-fastllm>=0.0.34", "aidialog>=0.0.7", "fastllm-claude-code>=0.0.7", "safecmd", "pyskills", "pillow"]
+    "python-fastllm>=0.0.38", "aidialog>=0.0.7", "fastllm-claude-code>=0.0.7", "safecmd", "pyskills", "pillow"]
 
 [project.scripts]
 ipyai = "ipyai.cli:main"

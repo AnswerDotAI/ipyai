@@ -527,8 +527,7 @@ class App:
             for p in m.content:
                 if getattr(p, 'type', None) is None: continue
                 if p.type.name == 'text' and p.text and m.role == 'assistant':
-                    t = '\n'.join(l for l in p.text.splitlines() if not (l.startswith('- ⏳') and l.endswith('⏳')))
-                    if t.strip(): tr.md.feed(t)
+                    if p.text.strip(): tr.md.feed(p.text)
                 elif p.type.name in ('tool_use', 'tool_result'): tr.event(p)
         tr.done()
 
