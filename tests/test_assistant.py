@@ -1,7 +1,7 @@
 "cp3/cp4: routing, streaming reply rendering, the assistant end-to-end over a StubChat, paste bindings, ghost text."
 import asyncio
 from fastcore.xml import to_xml
-from aidialog.msg_parts import Part, PartType, Msg, hist2fmt
+from aidialog.msg_parts import Part, Text, Thinking, ToolUse, ToolResult, Msg, hist2fmt
 from teleprint.testing import EmuTty
 from ipyai.cli import App, _gutter
 from ipyai.reply import TurnRenderer
@@ -11,10 +11,10 @@ def mk_cfg(**kw):
     return dict(model='m', suggest_model='cm', think='l',
                 code_theme='ansi_dark', prompt_mode=False) | kw
 
-def tool_use(name, args, id='t1'): return Part(type=PartType.tool_use, data=dict(id=id, name=name, arguments=args, server=False))
-def tool_result(name, args, text, id='t1'): return Part(type=PartType.tool_result, text=text, data=dict(id=id, name=name, arguments=args, server=False))
-def text_part(t): return Part(type=PartType.text, text=t)
-def think_part(t): return Part(type=PartType.thinking, text=t)
+def tool_use(name, args, id='t1'): return ToolUse(id=id, name=name, arguments=args)
+def tool_result(name, args, text, id='t1'): return ToolResult(id=id, name=name, arguments=args, text=text)
+def text_part(t): return Text(t)
+def think_part(t): return Thinking(t)
 
 class StubChat:
     """Stands in for one fastllm AsyncChat: `await chat(msg, stream=True, ...)` yields the scripted
@@ -37,8 +37,8 @@ class StubChat:
     def full(self, **kw):
         "The turn's canonical form, from the scripted parts via the real `hist2fmt`"
         evs = [e for e in self.factory.events if isinstance(e, Part)]
-        aps = [e for e in evs if e.type in (PartType.text, PartType.tool_use)]
-        tps = [e for e in evs if e.type == PartType.tool_result]
+        aps = [e for e in evs if isinstance(e, (Text, ToolUse))]
+        tps = [e for e in evs if isinstance(e, ToolResult)]
         return hist2fmt([Msg('assistant', aps)] + ([Msg('tool', tps)] if tps else []))
 
 class StubChatFactory:
@@ -162,7 +162,7 @@ async def test_reply_stored_in_fastllm_form():
     assert '```json {.tool}' in resp and 'Done.' in resp
     from aidialog.msg_parts import fmt2hist
     msgs = fmt2hist(resp)   # the stored form round-trips
-    assert any(p.type == PartType.tool_result for m in msgs for p in m.content)
+    assert any(isinstance(p, ToolResult) for m in msgs for p in m.content)
 
 async def test_interrupt_freezes_turn():
     gate = asyncio.Event()

@@ -14,6 +14,7 @@ from teleprint.widgets import CompletionMenu, Tooltip, Signature
 from teleprint.transcript import TranscriptView
 from .shell import GateShell
 import aidialog.ipynb  # noqa: F401 -- activates the Message.cell_meta/to_cell patches (meta_attrs serialization)
+from aidialog.msg_parts import Text as TextPart, ToolUse, ToolResult
 from fastcore.ansi import strip_ansi
 from fastcore.basics import str_enum
 from fastcore.script import call_parse
@@ -525,10 +526,9 @@ class App:
             return
         for m in msgs:
             for p in m.content:
-                if getattr(p, 'type', None) is None: continue
-                if p.type.name == 'text' and p.text and m.role == 'assistant':
+                if isinstance(p, TextPart) and p.text and m.role == 'assistant':
                     if p.text.strip(): tr.md.feed(p.text)
-                elif p.type.name in ('tool_use', 'tool_result'): tr.event(p)
+                elif isinstance(p, (ToolUse, ToolResult)): tr.event(p)
         tr.done()
 
     def resume_session(self, path):

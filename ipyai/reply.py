@@ -11,7 +11,7 @@ collapsed-by-default blocks, and a fresh partial follows."""
 import mdhtml
 from rich.text import Text
 from .mdrich import md_blocks
-from aidialog.msg_parts import Part, PartType
+from aidialog.msg_parts import Part, Text as TextPart, Thinking, ToolUse, ToolResult
 
 def _trunc(v, mx=40):
     s = v if isinstance(v, str) else repr(v)
@@ -153,13 +153,13 @@ class TurnRenderer:
                 self.md.feed(e)
             return
         if not isinstance(e, Part): return
-        if e.type in (PartType.tool_use, PartType.tool_result):
-            call = tool_call((e.data or {}).get('name') or 'tool', (e.data or {}).get('arguments') or {})
-            if e.type == PartType.tool_use: self._tool_open(call)
+        if isinstance(e, (ToolUse, ToolResult)):
+            call = tool_call(e.name or 'tool', e.arguments or {})
+            if isinstance(e, ToolUse): self._tool_open(call)
             else:
                 if self.tool is None: self._tool_open(call)
                 self._tool_update(result=str(e.text or ' '))
-        elif e.type == PartType.thinking and e.text:
+        elif isinstance(e, Thinking) and e.text:
             if self.think is None:
                 self.md.flush()
                 self.think = (Grower(self.comp, self.gutters('think'), 'think', collapse_at=self.collapse_at), '')
@@ -169,7 +169,7 @@ class TurnRenderer:
                 g.update(Text(acc.strip(), style='dim italic'))
                 g.blk.source = acc.strip()
             self.think = (g, acc)
-        elif e.type == PartType.text and e.text:
+        elif isinstance(e, TextPart) and e.text:
             self._close_think()
             self.md.feed(e.text)
 

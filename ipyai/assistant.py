@@ -6,7 +6,7 @@ formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every mo
 fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
 import asyncio, ast, os
 from aidialog.dialog import Dialog, INTERRUPTED
-from aidialog.msg_parts import Part, PartType
+from aidialog.msg_parts import Part, Text
 from aidialog.hist import dlg2hist, get_exprs, is_nameerr, vars_hist, warning_tag
 from fastcore.xml import to_xml
 from .config import load_config, load_sysp, SUGGEST_SP
@@ -212,6 +212,6 @@ class Assistant:
         parts += ['</current-input>', 'Return only the suggestion text to insert immediately after the prefix.']
         chat = self._make_chat(self.suggest_model, SUGGEST_SP)
         rs = await chat('\n'.join(p for p in parts if p), stream=True)
-        try: return ''.join([o.text or '' async for o in rs if isinstance(o, Part) and o.type==PartType.text]).strip()
+        try: return ''.join([o.text or '' async for o in rs if isinstance(o, Text)]).strip()
         finally:
             if aclose := getattr(rs, 'aclose', None): await aclose()

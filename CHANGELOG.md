@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.1.1
+
+### New Features
+
+- Migrate streaming to fastllm Part-based events and StreamAccum ([#29](https://github.com/AnswerDotAI/ipyai/issues/29))
+- Move shell to gateway terminal and adopt jupyasyncclient run/eval APIs, with compositor-owned tasks and signals ([#27](https://github.com/AnswerDotAI/ipyai/issues/27))
+
+
 ## 0.1.0
 
 ### New Features
