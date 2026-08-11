@@ -194,7 +194,7 @@ class Assistant:
         self.last_use = getattr(chat, 'use', None)
         self.last_req_use = getattr(chat, 'last_req_use', None)
         if self.bridge:
-            try: await self.bridge.set_vars(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
+            try: self.bridge.set_vars(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
             except Exception: pass
         self.save()
         return text

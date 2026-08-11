@@ -70,6 +70,6 @@ class KernelBridge:
 
     async def read_vars(self, names): return await self.client.eval_exprs(vs=list(names))
 
-    async def set_vars(self, **vals):
+    def set_vars(self, **vals):
         "Assign values into the kernel's user namespace, silently."
-        await self.client.xpush(**vals)
+        self.client.xpush(**vals)

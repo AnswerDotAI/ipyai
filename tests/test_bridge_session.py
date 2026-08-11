@@ -18,7 +18,7 @@ async def test_bridge_and_writeback(gateway):
         out = await tools.call_text('py', {'code': 'zz = 6*7\nprint("side effect")\nzz'})
         assert 'side effect' in out and '42' in out
         assert await bridge.read_var('zz') == 42  # the tool ran in the USER'S namespace
-        await bridge.set_vars(**{LAST_RESPONSE: 'the reply text'})
+        bridge.set_vars(**{LAST_RESPONSE: 'the reply text'})
         assert await bridge.read_var(LAST_RESPONSE) == 'the reply text'
         # a normal cell still renders normally after bridge traffic (no iopub leakage)
         outs = []
