@@ -1,15 +1,15 @@
-"Kernel lifecycle over a jupygate gateway: jupyasyncclient + ipymini, iopub rendered as it arrives."
+"Kernel lifecycle over a rustygate gateway: jupyasyncclient + ipymini, iopub rendered as it arrives."
 import os
 from fastcore.utils import first
 from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
 from jupyasyncclient import JupyAsyncKernelClient
 
-DEFAULT_URL = 'http://127.0.0.1:8787'   # jupygate's default port; IPYAI_GATEWAY overrides
+DEFAULT_URL = 'http://127.0.0.1:8787'   # rustygate's default port; IPYAI_GATEWAY overrides
 
 
 class KernelSession:
     """One gateway kernel and its ws client; incremental iopub for UIs (messages surface as they
-    arrive, not drained at completion). jupygate is a hard runtime prerequisite, like any Jupyter
+    arrive, not drained at completion). rustygate is a hard runtime prerequisite, like any Jupyter
     server: an unreachable gateway fails loudly at `start` with the command to run."""
     def __init__(self, url=None):
         self.url = url or os.environ.get('IPYAI_GATEWAY', DEFAULT_URL)
@@ -23,7 +23,7 @@ class KernelSession:
         ownership is `connect`'s: it stamps `kc.owned`, honored at close."""
         self.mgr = JupyAsyncMultiKernelManager(self.url)
         try: ks = await self.mgr.list_kernels()   # reachability and auth fail here, loudly
-        except Exception as e: raise ConnectionError(f'no jupygate gateway at {self.url} (start one with `jupygate`): {e}') from e
+        except Exception as e: raise ConnectionError(f'no rustygate gateway at {self.url} (start one with `rustygate`): {e}') from e
         if kernel:
             kid = first(k['id'] for k in ks if k['id'].startswith(kernel))
             if not kid: raise ValueError(f'no kernel matching {kernel!r} on {self.url}: {[k["id"][:8] for k in ks]}')
@@ -51,7 +51,6 @@ class KernelSession:
     async def close(self):
         "Close the client (`kc.__aexit__` is the ownership contract: an owned kernel shuts down, an attached one survives)."
         if self.kc is not None: await self.kc.__aexit__()
-        if self.mgr is not None: await self.mgr.aclose()
 
     async def __aenter__(self): return await self.start()
     async def __aexit__(self, *exc): await self.close()

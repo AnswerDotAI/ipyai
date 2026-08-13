@@ -1,4 +1,4 @@
-"The shell layer over the gateway: a persistent bash/zsh as a jupygate terminal, sentinel boundaries, emulator-cleaned residue."
+"The shell layer over the gateway: a persistent bash/zsh as a rustygate terminal, sentinel boundaries, emulator-cleaned residue."
 import asyncio, pyghostty
 from ipyai.shell import GateShell
 

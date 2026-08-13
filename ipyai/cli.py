@@ -1035,7 +1035,7 @@ async def main(
     Load:str=None,           # load a dialog .ipynb into the session at startup
     sessions:bool=False,     # list past ipyai sessions for this directory and exit
 ):
-    "IPython + AI on the teleprint transcript (plain launch always starts a fresh session; jupygate must be running)"
+    "IPython + AI on the teleprint transcript (plain launch always starts a fresh session; rustygate must be running)"
     import faulthandler
     faulthandler.register(signal.SIGQUIT)  # C-\ prints every thread's stack and continues: a wedged app becomes diagnosable from the pane
     if sessions: return print(_sessions_text(list_sessions()))

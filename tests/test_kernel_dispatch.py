@@ -83,7 +83,7 @@ async def test_iopub_buffer_captures_stream_and_display(session_kernel):
     loop = asyncio.get_running_loop()
     start = loop.time()
     while loop.time() - start < 10:
-        try: msg = await asyncio.wait_for(client.get_iopub_msg(), timeout=0.5)
+        try: msg = await asyncio.wait_for(client.get_jmsg(), timeout=0.5)
         except asyncio.TimeoutError: continue
         if msg["parent_header"].get("msg_id") != msg_id: continue
         _capture(msg)

@@ -61,16 +61,16 @@ async def _clear_extras(bridge, baseline):
 
 @pytest.fixture(scope="session")
 def gateway():
-    "An in-thread jupygate for the whole test session (the clikernel test pattern)."
-    from jupygate.core import create_app, serve
-    server = serve(create_app(), port=0, in_thread=True)   # port 0: a free port per xdist worker
-    yield server.url
-    server.should_exit = True
+    "A rustygate subprocess for the whole test session (the jupyasyncclient test pattern)."
+    from rustygate.tools import start_gateway
+    g = start_gateway()   # free port per xdist worker
+    yield g.url
+    g.stop()
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _gateway_env(gateway):
-    "Point every bare KernelSession() at the test gateway: no test may ever touch a live jupygate."
+    "Point every bare KernelSession() at the test gateway: no test may ever touch a live gateway."
     os.environ['IPYAI_GATEWAY'] = gateway
     yield
     os.environ.pop('IPYAI_GATEWAY', None)

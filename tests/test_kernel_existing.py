@@ -22,4 +22,3 @@ async def test_attach_existing_kernel_without_shutdown(gateway):
     await owner.close()  # owned: now it goes
     m = JupyAsyncMultiKernelManager(gateway)
     assert not await m.is_alive(kid)
-    await m.aclose()

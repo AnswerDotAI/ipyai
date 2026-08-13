@@ -8,7 +8,7 @@
 pip install -e .
 ```
 
-ipyai is a [jupygate](https://github.com/answerdotai/jupygate) client: a running local jupygate serves the kernels, like any Jupyter client setup. A plain launch creates a fresh kernel and shuts it down on exit; `ipyai -k PREFIX` attaches to an existing gateway kernel instead, taken as found and left running on exit.
+ipyai is a [rustygate](https://github.com/answerdotai/rustygate) client: a running local rustygate serves the kernels, like any Jupyter client setup. A plain launch creates a fresh kernel and shuts it down on exit; `ipyai -k PREFIX` attaches to an existing gateway kernel instead, taken as found and left running on exit.
 
 ## Models
 
@@ -28,7 +28,7 @@ Each AI turn sends the session so far: executed cells with their outputs, notes,
 
 ## The shell
 
-Shell submissions run in one persistent shell, your own bash or zsh with your rc loaded, hosted by jupygate beside the kernel and closed with the app. `cd`, exported variables, aliases, functions, and virtualenv activation persist across commands, and the kernel's working directory follows the shell's. Commands run on the real terminal, so full-screen programs such as `vim` and `htop` work. When a command finishes, a cleaned block of its output enters the transcript and the AI's context.
+Shell submissions run in one persistent shell, your own bash or zsh with your rc loaded, hosted by rustygate beside the kernel and closed with the app. `cd`, exported variables, aliases, functions, and virtualenv activation persist across commands, and the kernel's working directory follows the shell's. Commands run on the real terminal, so full-screen programs such as `vim` and `htop` work. When a command finishes, a cleaned block of its output enters the transcript and the AI's context.
 
 Normal job control works, because the shell is real: `cmd &`, `ctrl-Z`, `jobs`, `fg`, `bg`. Quitting while the shell is running warns once; pressing `ctrl-D` again quits, closing the shell and its jobs like a terminal window. Typing `exit` ends the shell, and the next shell command starts a fresh one. Embedded forms such as `x = !ls` stay kernel-side with IPython's usual capture semantics.
 

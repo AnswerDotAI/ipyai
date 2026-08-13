@@ -22,4 +22,3 @@ async def test_spawn_bootstrap_skip_seed_shutdown(gateway):
     await ks.close()
     m = JupyAsyncMultiKernelManager(gateway)
     assert not await m.is_alive(kid), "an owned kernel is shut down on close"
-    await m.aclose()

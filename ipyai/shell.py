@@ -1,6 +1,6 @@
 """The bare-`!` shell as a gateway terminal: spawn via the terminals API, per-command relay with sentinel boundaries.
 
-One interactive shell (bash or zsh) runs as a jupygate-hosted pty (ptymini), created fresh per ipyai
+One interactive shell (bash or zsh) runs as a rustygate-hosted pty (ptymini), created fresh per ipyai
 session and deleted on exit -- so it lives beside the kernel: same machine, container, and filesystem,
 which is what makes the shell<->kernel cwd sync coherent. The prompt-integration choreography is
 teleprint's original, and it is entirely in-band, so it survives the transport change: the user's rc
