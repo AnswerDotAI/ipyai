@@ -2,6 +2,14 @@
 
 <!-- do not remove -->
 
+## 0.1.3
+
+### New Features
+
+- Switch gateway backend from jupygate to rustygate ([#31](https://github.com/AnswerDotAI/ipyai/issues/31))
+- Make KernelBridge.`set_vars` synchronous ([#30](https://github.com/AnswerDotAI/ipyai/issues/30))
+
+
 ## 0.1.2
 
 
