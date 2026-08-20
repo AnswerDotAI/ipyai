@@ -17,10 +17,10 @@ class KernelSession:
         self.on_comm = None   # host-side comm handler: (msg_type, content) for comm traffic seen on iopub
         self.on_stdin = None  # async (prompt, password) -> str, answering kernel input_requests
 
-    async def start(self, kernel=''):
+    async def start(self, kernel='', cwd=None, env=None):
         """Create an owned kernel (closed on exit), or attach to `kernel` by id prefix (taken as
-        found: not seeded, never stopped by us). Owned kernels start in our cwd and environment;
-        ownership is `connect`'s: it stamps `kc.owned`, honored at close."""
+        found: not seeded, never stopped by us). Owned kernels start in `cwd` (ours if None) with
+        `env` laid over our environment; ownership is `connect`'s: it stamps `kc.owned`, honored at close."""
         self.mgr = JupyAsyncMultiKernelManager(self.url)
         try: ks = await self.mgr.list_kernels()   # reachability and auth fail here, loudly
         except Exception as e: raise ConnectionError(f'no rustygate gateway at {self.url} (start one with `rustygate`): {e}') from e
@@ -28,7 +28,7 @@ class KernelSession:
             kid = first(k['id'] for k in ks if k['id'].startswith(kernel))
             if not kid: raise ValueError(f'no kernel matching {kernel!r} on {self.url}: {[k["id"][:8] for k in ks]}')
             self.kc = await JupyAsyncKernelClient.connect(self.url, kernel=kid)
-        else: self.kc = await JupyAsyncKernelClient.connect(self.url, cwd=os.getcwd(), env=dict(os.environ))
+        else: self.kc = await JupyAsyncKernelClient.connect(self.url, cwd=str(cwd or os.getcwd()), env=dict(os.environ, **(env or {})))
         self.kid, self.owned = self.kc.kernel_id, self.kc.owned
         if self.owned:   # seed the REPL services (sig_help etc.); attached kernels are taken as found
             try: await self.kc.reply("get_ipython().extension_manager.load_extension('ipykernel_helper.core')",

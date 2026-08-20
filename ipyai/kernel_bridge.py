@@ -1,10 +1,12 @@
 "Kernel-facing bridge: tool discovery, tool calls, and variable reads over a `JupyAsyncKernelClient` (whose eval family does the wire work)."
-import json
+import asyncio, json
+from aidialog.dialog import Message
+from aidialog.hist import output_parts, merge_media
+from aidialog.msg_parts import FullResponse, ToolResponse
 
 
-# `py` is the ipyaing kernel tool (the solveit name; codex reserves `python` model-side); `python` remains
-# discoverable for legacy kernels where the safepyrun extension seeds it. Only one is ever defined at a time.
-CUSTOM_TOOL_NAMES = ("py", "python", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
+# `py` is the ipyaing kernel tool (the solveit name; codex reserves `python` model-side)
+CUSTOM_TOOL_NAMES = ("py", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
 _SEED_IMPORTS = dict(bash="from safecmd import bash", start_bgterm="from ptymini.bg import start_bgterm",
     write_stdin="from ptymini.bg import write_stdin", close_bgterm="from ptymini.bg import close_bgterm",
     lnhashview_file="from exhash import lnhashview_file", exhash_file="from exhash import exhash_file",
@@ -14,11 +16,13 @@ _TOOL_TIMEOUT = 600
 
 
 class KernelBridge:
-    "Gives ToolRegistry a namespace-shaped interface over the kernel; silent executes, nothing in history."
+    "Gives ToolRegistry a namespace-shaped interface over the kernel: silent executes for reads and tool calls (nothing in history), except `py`, which runs as a plain cell."
     def __init__(self, client):
         self.client = client
         self._schemas = None
         self._names = None
+        self.aim_info = None   # model capability dict gating images in `py` results; the Assistant sets it each turn
+        self._run_lock = asyncio.Lock()   # one `py` cell at a time on this client (see `run_py`)
 
     async def _exec(self, code, *, timeout=_EXEC_TIMEOUT):
         cts = (await self.client.reply(code, silent=True, store_history=False, timeout=timeout))["content"]
@@ -31,7 +35,7 @@ class KernelBridge:
         return list(r) if isinstance(r, list) else []
 
     async def seed_tools(self, skip=()):
-        "Import the custom tool names (other than py/python, which are defined by the host)."
+        "Import the custom tool names (other than py, which is defined by the host)."
         skip = set(skip)
         for stmt in (_SEED_IMPORTS[n] for n in CUSTOM_TOOL_NAMES if n in _SEED_IMPORTS and n not in skip):
             try: await self._exec(stmt)
@@ -54,15 +58,24 @@ class KernelBridge:
     async def call_tool(self, name, args=None):
         names = await self.available_names()
         if name not in names: raise NameError(f"{name!r} is not defined in the kernel namespace")
+        if name == 'py': return await self.run_py(args['code'])
         await self._exec(f"_ipyai_r = await call_tool(globals()[{name!r}], {(args or {})!r})", timeout=_TOOL_TIMEOUT)
         full_e = "any(c.__name__=='FullResponse' for c in type(_ipyai_r).__mro__)"
         exprs = await self.client.eval_exprs(vs=['_ipyai_r', full_e])
         res = exprs.get('_ipyai_r')
         text = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, default=str)
-        if exprs.get(full_e) is True:
-            from aidialog.msg_parts import FullResponse
-            return FullResponse(text)
-        return text
+        return FullResponse(text) if exprs.get(full_e) is True else text
+
+    async def run_py(self, code):
+        """The `py` tool: run the model's `code` as a plain cell, the same path as a user cell (so the kernel sees
+        exactly the model's code, and nothing is captured kernel-side), and render the nbformat outputs for the
+        model the way solveit does: `ai_output` text, images as media parts gated by `aim_info`. Calls serialize
+        on `_run_lock`: fastllm runs a turn's tool calls in parallel, and two `Run` streams on one client would
+        take each other's reply and idle messages."""
+        async with self._run_lock: outs = await self.client.run(code)
+        m = Message(code, output=outs)
+        res = merge_media(m.ai_output, output_parts(m, self.aim_info))
+        return res if isinstance(res, str) else ToolResponse(res)
 
     async def read_var(self, name):
         "Value of live expression `name` (`foo` or `foo.bar(...)`); an `<error .../>` string when it raises."
