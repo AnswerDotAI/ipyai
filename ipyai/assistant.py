@@ -4,16 +4,15 @@ The session IS a Dialog: executed cells append as code/note messages (with verba
 outputs), AI turns append as prompt messages whose output holds the reply in fastllm's canonical
 formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every model is one
 fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
-import asyncio, ast, os, re, subprocess
-from aidialog.dialog import Dialog, prompt_output
-from aidialog.hist import dlg2hist   # also activates the Message.to_parts patch
+import asyncio, ast, os
+from aidialog.dialog import Dialog, INTERRUPTED
+from aidialog.msg_parts import Part, Text
+from aidialog.hist import dlg2hist, get_exprs, is_nameerr, vars_hist, warning_tag
+from fastcore.xml import to_xml
 from .config import load_config, load_sysp, SUGGEST_SP
 
 LAST_PROMPT = '_ai_last_prompt'
 LAST_RESPONSE = '_ai_last_response'
-_var_re = re.compile(r"\$`(\w+(?:\([^`]*\))?)`")
-_shell_re = re.compile(r"(?<![\w`])!`([^`]+)`")
-_MISSING = object()
 
 def route(text, mode='code'):
     """The mode dispatch, at submit time: ('prompt'|'code'|'job', payload). Three modes --
@@ -47,28 +46,6 @@ def code_blocks(md):
     return [b['text'].rstrip('\n') for b in mdhtml.blocks(md or '')
             if b['type'] == 'code_block' and b.get('lang') in ('python', 'py') and b.get('text', '').strip()]
 
-async def _eval_vars(names, bridge):
-    if not names or bridge is None: return {}
-    out = {}
-    for name in names:
-        try: val = await bridge.read_var(name)
-        except Exception: val = _MISSING
-        out[name] = val
-    return out
-
-def _format_var_xml(values):
-    return ''.join(f'<variable name="{n}" type="{type(v).__name__}">{v}</variable>'
-                   for n, v in sorted(values.items()) if v is not _MISSING and v is not None)
-
-def _run_shell_refs(cmds):
-    if not cmds: return ''
-    parts = []
-    for cmd in sorted(cmds):
-        try: out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30).stdout.rstrip()
-        except Exception as e: out = f'Error: {e}'
-        parts.append(f'<shell cmd="{cmd}">{out}</shell>')
-    return ''.join(parts)
-
 class _BridgeNS(dict):
     """Dict-shaped proxy routing fastllm's ns-based tool dispatch through the ToolRegistry bridge:
     `ns[name]` yields an async caller, so kernel-side tools look like local callables."""
@@ -98,8 +75,12 @@ class Assistant:
         self.last_response = ''
         self.last_use = None     # fastllm UsageStats from the latest turn (status-bar material)
         self.last_req_use = None  # UsageStats of the final request alone: its size is the current ctx (`last_use` sums a whole turn)
-        self.store = None        # optional Store (persistence); set by the app after kernel start
+        self.session = None      # optional Session (persistence); set by the app after kernel start
         self._consumer = None    # the in-flight turn's stream-consumer task, cancel_turn's target
+
+    def save(self):
+        "Persist the dialog to its session file (whole-file write, atomic); a no-op without a session."
+        if self.session: self.session.save(self.dlg, model=self.model, think=self.think)
 
     def reset(self):
         "Start a fresh conversation: new empty Dialog, counters cleared. Kernel state is untouched."
@@ -135,31 +116,28 @@ class Assistant:
                          ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
     def add_cell(self, source, outputs):
-        "Record one executed cell: raw iopub (msg_type, content) records become an nbformat code/note message, returned (None when nothing records)."
+        "Record one executed cell: nbformat-shaped outputs become a code/note message, returned (None when nothing records)."
         if source.lstrip().startswith('%ipyai'): return  # housekeeping commands are not part of the conversation
-        from .store import nbformat_outputs
-        outs = nbformat_outputs(outputs)
         if _is_note(source): m = self.dlg.mk_message(_note_str(source), msg_type='note')
-        else: m = self.dlg.mk_message(source, msg_type='code', output=outs)
+        else: m = self.dlg.mk_message(source, msg_type='code', output=list(outputs))
         self.n_cells += 1
-        m.store_line = self.n_cells  # handle for later metadata updates (hide/pin toggles)
-        if self.store: self.store.save_cell(self.n_cells, source, outputs)
+        self.save()
         return m
 
-    async def _ref_parts(self):
-        "`$`var``/`!`cmd`` expansions gathered across every prompt in the dialog, evaluated now."
-        names, cmds = set(), set()
-        for m in self.dlg.messages:
-            if m.msg_type == 'prompt':
-                names |= set(_var_re.findall(m.content))
-                cmds |= set(_shell_re.findall(m.content))
-        values = await _eval_vars(names, self.bridge)
-        missing = sorted(n for n, v in values.items() if v is _MISSING)
-        parts = []
-        if missing: parts.append(f"<warnings>The following symbols were referenced but aren't defined in the interpreter: {', '.join(missing)}</warnings>")
-        if xml := _format_var_xml(values): parts.append(xml)
-        if xml := _run_shell_refs(cmds): parts.append(xml)
-        return parts
+    async def _vars_turn(self):
+        """The synthetic variables turn plus any missing-var warning: `$` and `!` refs both resolved
+        in ONE kernel round trip (solveit's `prepare_context` shape; `!` via the kernel's own
+        `getoutput`, keyed by full ref form), merged for `vars_hist`."""
+        names = get_exprs(self.dlg.messages)
+        cmds = get_exprs(self.dlg.messages, sigil='!')
+        cmd_exprs = {c: f'get_ipython().getoutput({c!r}).n' for c in cmds}
+        ns = {}
+        if self.bridge is not None and (names or cmd_exprs):
+            ns = await self.bridge.client.eval_exprs(vs=names + list(cmd_exprs.values())) or {}
+        missing = sorted(v for v in names if is_nameerr(ns.get(v)))
+        ns = {v: ns[v] for v in names if v in ns and v not in missing} | {f'!`{c}`': ns[e] for c, e in cmd_exprs.items() if e in ns}
+        warn = warning_tag(f"The following symbols were referenced but aren't defined in the interpreter: {', '.join(missing)}." if missing else '')
+        return vars_hist(self.aim_info, ns), (to_xml(warn, do_escape=False) if warn else None)
 
     def cancel_turn(self):
         "Stop the in-flight AI turn (ctrl-C): the consumer task is cancelled, not the caller."
@@ -170,16 +148,18 @@ class Assistant:
 
     async def run_prompt(self, prompt, renderer):
         """One AI turn: append the prompt message, build history via `dlg2hist`, stream the chat through
-        `renderer` (a TurnRenderer) while an `AsyncStreamFormatter` tees the canonical stored form, then
-        land the reply in the message output and the kernel namespace. `cancel_turn` freezes the partial
-        mid-stream; the consumer runs as its own task so cancelling it leaves cleanup awaits running."""
-        from fastllm.chat import AsyncStreamFormatter
+        `renderer` (a TurnRenderer), then land the reply in the message output and the kernel namespace.
+        The stored form is `chat.full()`; an interrupt freezes the accumulated partial instead.
+        The consumer runs as its own task so cancelling it leaves cleanup awaits running."""
+        from fastllm.chat import StreamAccum
         prompt = (prompt or '').strip()
         if not prompt: return None
         pmsg = self.dlg.mk_message(prompt, msg_type='prompt')
         try:
             *hist, parts, _ = dlg2hist(self.dlg, self.aim_info)
-            parts = await self._ref_parts() + parts
+            vh, warn = await self._vars_turn()
+            hist = vh + hist
+            if warn: parts.insert(0, warn)
             tools = ((await self.tools.openai_schemas()) or None) if self.tools else None
             ns = _BridgeNS(self.tools) if tools else {}
             chat = self._make_chat(self.model, self.sp, tools=tools, ns=ns, hist=hist)
@@ -187,12 +167,12 @@ class Assistant:
         except BaseException:
             self.dlg.remove_msgs([pmsg])   # the turn never started: a retry must not double the prompt
             raise
-        fmt = AsyncStreamFormatter()
+        acc = StreamAccum(chat)
         async def _consume():
             async for e in stream:
-                fmt.format_item(e)
+                acc(e)
                 renderer.event(e)
-        self._consumer = asyncio.ensure_future(_consume())
+        self._consumer = asyncio.create_task(_consume(), name='stream-consumer')  # bare deliberately: its exception is consumed at the await below
         interrupted = False
         try:
             await self._consumer
@@ -207,17 +187,16 @@ class Assistant:
         finally:
             self._consumer = None
             if aclose := getattr(stream, 'aclose', None): await aclose()
-        text = fmt.outp.strip()
-        if interrupted: text += '\n\n*[Response interrupted]*'  # ai_fmt strips this marker on replay
+        text = (acc.txt if interrupted else chat.full()).strip()
+        if interrupted: text += '\n\n' + INTERRUPTED  # ai_fmt strips this marker on replay
         pmsg.output = text    # the setter wraps prompt output and clears the ai_output cache
         self.last_response = text
         self.last_use = getattr(chat, 'use', None)
         self.last_req_use = getattr(chat, 'last_req_use', None)
         if self.bridge:
-            try: await self.bridge.set_vars(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
+            try: self.bridge.set_vars(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
             except Exception: pass
-        if self.store:
-            pmsg.store_id = self.store.save_prompt(prompt, '\n\n'.join(p for p in parts if isinstance(p, str)), text, self.n_cells)  # rowid: the handle for later metadata updates
+        self.save()
         return text
 
     def _recent_xml(self):
@@ -233,6 +212,6 @@ class Assistant:
         parts += ['</current-input>', 'Return only the suggestion text to insert immediately after the prefix.']
         chat = self._make_chat(self.suggest_model, SUGGEST_SP)
         rs = await chat('\n'.join(p for p in parts if p), stream=True)
-        try: return ''.join([(o.get('text') or '') async for o in rs if isinstance(o, dict)]).strip()
+        try: return ''.join([o.text or '' async for o in rs if isinstance(o, Text)]).strip()
         finally:
             if aclose := getattr(rs, 'aclose', None): await aclose()

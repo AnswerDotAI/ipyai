@@ -8,6 +8,8 @@
 pip install -e .
 ```
 
+ipyai is a [rustygate](https://github.com/answerdotai/rustygate) client: a running local rustygate serves the kernels, like any Jupyter client setup. A plain launch creates a fresh kernel and shuts it down on exit; `ipyai -k PREFIX` attaches to an existing gateway kernel instead, taken as found and left running on exit.
+
 ## Models
 
 Models live in one flat namespace: a vendor-prefixed string such as `codex/gpt-5.6-terra` (the default), `anthropic/claude-sonnet-4-6`, or `claude_code/claude-sonnet-4-6`. The prefix carries the transport as well as the vendor: `claude_code/` drives your Claude Code subscription while `anthropic/` uses an API key, for the same model name. Switch mid-session with `%ipyai model NAME`.
@@ -22,13 +24,13 @@ A prefix overrides the mode for one submission, from anywhere: `.` sends a promp
 .explain what this dataframe transform is doing
 ```
 
-Each AI turn sends the session so far: executed cells with their outputs, notes, shell commands, and earlier prompts and replies. Inside a prompt, `` $`name` `` includes a live variable's value and `` !`cmd` `` includes a shell command's output. `%` lines go to the kernel from every mode, so `%ipyai ...` always works.
+Each AI turn sends the session so far: executed cells with their outputs, notes, shell commands, and earlier prompts and replies. Inside a prompt, `` $`name` `` includes a live variable's value and `` !`cmd` `` includes a shell command's output (run via the kernel, like an embedded `!` in code -- not the persistent shell). `%` lines go to the kernel from every mode, so `%ipyai ...` always works.
 
 ## The shell
 
-Shell submissions run in one persistent shell, your own bash or zsh with your rc loaded. `cd`, exported variables, aliases, functions, and virtualenv activation persist across commands, and the kernel's working directory follows the shell's. Commands run on the real terminal, so full-screen programs such as `vim` and `htop` work. When a command finishes, a cleaned block of its output enters the transcript and the AI's context.
+Shell submissions run in one persistent shell, your own bash or zsh with your rc loaded, hosted by rustygate beside the kernel and closed with the app. `cd`, exported variables, aliases, functions, and virtualenv activation persist across commands, and the kernel's working directory follows the shell's. Commands run on the real terminal, so full-screen programs such as `vim` and `htop` work. When a command finishes, a cleaned block of its output enters the transcript and the AI's context.
 
-Normal job control works, because the shell is real: `cmd &`, `ctrl-Z`, `jobs`, `fg`, `bg`. Quitting with live jobs warns once and lists them. Pressing `ctrl-D` again quits and terminates them, like closing a terminal window. Typing `exit` ends the shell, and the next shell command starts a fresh one. Embedded forms such as `x = !ls` stay kernel-side with IPython's usual capture semantics.
+Normal job control works, because the shell is real: `cmd &`, `ctrl-Z`, `jobs`, `fg`, `bg`. Quitting while the shell is running warns once; pressing `ctrl-D` again quits, closing the shell and its jobs like a terminal window. Typing `exit` ends the shell, and the next shell command starts a fresh one. Embedded forms such as `x = !ls` stay kernel-side with IPython's usual capture semantics.
 
 ## Folding and numbering
 
@@ -36,7 +38,7 @@ Big blocks fold to one summary line automatically, and everything visible stays 
 
 ## Images
 
-Images render through kitty graphics with Unicode placeholders, so they survive tmux and scrollback; terminals without kitty graphics get a text placeholder. PNG and JPEG outputs both work. Persisted copies are capped at 2M pixels (display stays full size).
+Images render through kitty graphics with Unicode placeholders, so they survive tmux and scrollback; terminals without kitty graphics get a text placeholder. PNG and JPEG outputs both work. Copies sent to the model are resized down to at most 768² pixels; the session file and the display keep the original.
 
 ## Transcript mode
 
@@ -52,7 +54,7 @@ Images render through kitty graphics with Unicode placeholders, so they survive 
 %ipyai code_theme NAME        set the code highlight theme ('auto' redetects)
 %ipyai prompt                 toggle prompt mode
 %ipyai sessions               list past ipyai sessions for this directory
-%ipyai reset                  start a fresh conversation (and a new resumable session row)
+%ipyai reset                  start a fresh conversation (and a new resumable session file)
 %ipyai save PATH              export the session dialog as a .ipynb
 %ipyai load PATH              import a dialog .ipynb into the session
 ```
@@ -61,7 +63,7 @@ Setters double as getters: `%ipyai model` with no value shows the current one. S
 
 ## Sessions
 
-Transcripts persist in IPython's own `history.sqlite` alongside its input history, scoped to the directory you launched from: history navigation and ghost suggestions draw only on this directory's sessions, and each mode recalls its own past (code cells in code mode, prompts in prompt mode, shell commands in shell mode). Plain `ipyai` starts a fresh session; resuming is explicit with `-r`. Bare `ipyai -r` picks from this directory's past sessions (one resumes silently, several open a picker: digits choose, `Enter` takes the newest, `n` starts fresh), and `ipyai -r 43` resumes one by id (see `ipyai --sessions` for the list). Resume repaints the transcript without re-running anything. `%ipyai load` does the reverse for curated starter templates: it silently re-runs a dialog's cells to rebuild kernel state, painting nothing (`ipyai -l PATH` at startup).
+Each session is one dialog `.ipynb` under `./.ipyai/sessions/` (self-gitignored), written whole on every event, so the current directory owns its sessions: history navigation and ghost suggestions draw only on this directory's session files, and each mode recalls its own past (code cells in code mode, prompts in prompt mode, shell commands in shell mode). Plain `ipyai` starts a fresh session; resuming is explicit with `-r`. Bare `ipyai -r` picks from this directory's past sessions (one resumes silently, several open a picker: digits choose, `Enter` takes the newest, `n` starts fresh), and `ipyai -r PREFIX` resumes one by filename prefix (see `ipyai --sessions` for the list). Resume repaints the transcript without re-running anything, and warm-attaches the session's kernel when it is still alive (the kernel id is stamped in the file). `%ipyai load` does the reverse for curated starter templates: it silently re-runs a dialog's cells to rebuild kernel state, painting nothing (`ipyai -l PATH` at startup).
 
 ## Keys
 
@@ -74,7 +76,7 @@ Transcripts persist in IPython's own `history.sqlite` alongside its input histor
 - `ctrl-O` toggles the last block open or closed; `ctrl-T` opens transcript mode
 - `alt-r` recalls your last input (prompt, code, or shell) for editing, and submitting it *replaces* that turn -- the old version and everything after leave the record, and the AI answers the corrected history. In the transcript view, `E` on any prompt does the same from further back. Esc disarms; submitting as a different kind (rewriting a recalled cell into a prompt, say) appends normally instead.
 - `ctrl-C` cancels a running AI turn, else interrupts the kernel, else clears the input
-- `ctrl-D` quits (warning first if the shell has live jobs)
+- `ctrl-D` quits (warning first if the shell is running)
 - `alt-c`/`alt-p`/`alt-s` pick code/prompt/shell mode; `alt-0`..`alt-9` toggle the block wearing that digit
 
 ## Config

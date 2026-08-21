@@ -11,7 +11,7 @@ collapsed-by-default blocks, and a fresh partial follows."""
 import mdhtml
 from rich.text import Text
 from .mdrich import md_blocks
-from aidialog.msg_parts import Part, PartType
+from aidialog.msg_parts import Part, Text as TextPart, Thinking, ToolUse, ToolResult
 
 def _trunc(v, mx=40):
     s = v if isinstance(v, str) else repr(v)
@@ -144,35 +144,34 @@ class TurnRenderer:
             self.tool = None
 
     def event(self, e):
-        """Dispatch one fastllm stream item: dicts carry text/thinking deltas, `Part`s carry
-        tool calls and results, and anything else (Completion, ModelResponse) is bookkeeping.
+        """Dispatch one fastllm stream item: `Part`s carry text/thinking deltas and tool
+        calls/results; anything else (Refresh, Status, Completion) is bookkeeping.
         Plain strs also feed the markdown flow, for replays and tests."""
-        if isinstance(e, Part):
-            call = tool_call((e.data or {}).get('name') or 'tool', (e.data or {}).get('arguments') or {})
-            if e.type == PartType.tool_use: self._tool_open(call)
-            elif e.type == PartType.tool_result:
-                if self.tool is None: self._tool_open(call)
-                self._tool_update(result=str(e.text or ' '))
-            return
         if isinstance(e, str):
             if e:
                 self._close_think()
                 self.md.feed(e)
             return
-        if not isinstance(e, dict): return
-        if thk := e.get('thinking'):
+        if not isinstance(e, Part): return
+        if isinstance(e, (ToolUse, ToolResult)):
+            call = tool_call(e.name or 'tool', e.arguments or {})
+            if isinstance(e, ToolUse): self._tool_open(call)
+            else:
+                if self.tool is None: self._tool_open(call)
+                self._tool_update(result=str(e.text or ' '))
+        elif isinstance(e, Thinking) and e.text:
             if self.think is None:
                 self.md.flush()
                 self.think = (Grower(self.comp, self.gutters('think'), 'think', collapse_at=self.collapse_at), '')
             g, acc = self.think
-            acc += thk
+            acc += e.text
             if acc.strip():
                 g.update(Text(acc.strip(), style='dim italic'))
                 g.blk.source = acc.strip()
             self.think = (g, acc)
-        elif text := e.get('text'):
+        elif isinstance(e, TextPart) and e.text:
             self._close_think()
-            self.md.feed(text)
+            self.md.feed(e.text)
 
     def done(self):
         self._close_think()

@@ -1,82 +1,56 @@
-"Kernel lifecycle and incremental execution: conkernelclient + ipymini, iopub rendered as it arrives."
-import asyncio, sys, uuid
-from queue import Empty
-from conkernelclient import ConKernelManager, DeadKernelError
-from jupyter_client.kernelspec import KernelSpec
+"Kernel lifecycle over a rustygate gateway: jupyasyncclient + ipymini, iopub rendered as it arrives."
+import os
+from fastcore.utils import first
+from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
+from jupyasyncclient import JupyAsyncKernelClient
 
-DEFAULT_KERNEL = 'ipymini'
-OUTPUT_MSGS = ('stream', 'display_data', 'execute_result', 'error')
-COMM_MSGS = ('comm_open', 'comm_msg', 'comm_close')
+DEFAULT_URL = 'http://127.0.0.1:8787'   # rustygate's default port; IPYAI_GATEWAY overrides
 
-class ModuleKernelManager(ConKernelManager):
-    "Launches `python -m <module> -f <connection_file>`, so no kernelspec install is needed"
-    def __init__(self, module=DEFAULT_KERNEL, **kw):
-        super().__init__(**kw)
-        self._kernel_spec = KernelSpec(language='python', display_name=module,
-            argv=[sys.executable, '-Xfrozen_modules=off', '-m', module, '-f', '{connection_file}'])
 
 class KernelSession:
-    "One kernel and client; incremental iopub for UIs (messages surface as they arrive, not drained at completion)."
-    def __init__(self, module=DEFAULT_KERNEL):
-        self.module, self.km, self.kc, self.busy = module, None, None, False
-        self.on_comm = None  # host-side comm handler: (msg_type, content) for COMM_MSGS seen on iopub
+    """One gateway kernel and its ws client; incremental iopub for UIs (messages surface as they
+    arrive, not drained at completion). rustygate is a hard runtime prerequisite, like any Jupyter
+    server: an unreachable gateway fails loudly at `start` with the command to run."""
+    def __init__(self, url=None):
+        self.url = url or os.environ.get('IPYAI_GATEWAY', DEFAULT_URL)
+        self.mgr, self.kc, self.kid, self.owned, self.busy = None, None, None, False, False
+        self.on_comm = None   # host-side comm handler: (msg_type, content) for comm traffic seen on iopub
+        self.on_stdin = None  # async (prompt, password) -> str, answering kernel input_requests
 
-    async def start(self):
-        self.km = ModuleKernelManager(module=self.module)
-        await self.km.start_kernel()
-        self.kc = await self.km.client().start_channels()
+    async def start(self, kernel=''):
+        """Create an owned kernel (closed on exit), or attach to `kernel` by id prefix (taken as
+        found: not seeded, never stopped by us). Owned kernels start in our cwd and environment;
+        ownership is `connect`'s: it stamps `kc.owned`, honored at close."""
+        self.mgr = JupyAsyncMultiKernelManager(self.url)
+        try: ks = await self.mgr.list_kernels()   # reachability and auth fail here, loudly
+        except Exception as e: raise ConnectionError(f'no rustygate gateway at {self.url} (start one with `rustygate`): {e}') from e
+        if kernel:
+            kid = first(k['id'] for k in ks if k['id'].startswith(kernel))
+            if not kid: raise ValueError(f'no kernel matching {kernel!r} on {self.url}: {[k["id"][:8] for k in ks]}')
+            self.kc = await JupyAsyncKernelClient.connect(self.url, kernel=kid)
+        else: self.kc = await JupyAsyncKernelClient.connect(self.url, cwd=os.getcwd(), env=dict(os.environ))
+        self.kid, self.owned = self.kc.kernel_id, self.kc.owned
+        if self.owned:   # seed the REPL services (sig_help etc.); attached kernels are taken as found
+            try: await self.kc.reply("get_ipython().extension_manager.load_extension('ipykernel_helper.core')",
+                                     silent=True, store_history=False, timeout=10)
+            except Exception: pass
         return self
 
     async def run(self, code, on_output):
-        """Execute `code`, calling `on_output(msg_type, content)` per iopub output message as it arrives.
-        Completion means both the shell reply and the idle status OF THIS EXECUTION: iopub is a shared
-        broadcast, so status and outputs are filtered by parent msg id -- a stray idle left by an
-        out-of-band `eval_expr` (e.g. the shell layer's cwd sync) must not end the loop early, or this
-        cell's outputs orphan until the next run paints them one cell late. Comm traffic is deliberately
-        unfiltered. A ZMQ peer dying is silent -- no EOF, the reply just never comes -- so liveness is
-        polled while waiting (conkernel's lesson)."""
+        """Execute `code`, calling `on_output(out)` per nbformat-shaped output as it arrives: a thin
+        adapter over `kc.run`, which owns parent-id filtering, reply+idle completion, stdin via
+        `on_stdin` (absent means `allow_stdin=False`), comm passthrough via `on_comm`, and
+        dead-kernel detection (`DeadKernelError` on silence from a dead kernel)."""
         self.busy = True
         try:
-            mid = uuid.uuid4().hex
-            t = asyncio.ensure_future(self.kc.execute(code, reply=True, timeout=None, msg_id=mid))
-            idle = False
-            while not (t.done() and idle):
-                try: msg = await self.kc.get_iopub_msg(timeout=1)
-                except Empty:
-                    if not await self.km.is_alive():
-                        t.cancel()
-                        raise DeadKernelError('kernel died while executing')
-                    continue
-                mt, c = msg['msg_type'], msg['content']
-                mine = msg.get('parent_header', {}).get('msg_id') == mid
-                if mt == 'status' and c.get('execution_state') == 'idle' and mine: idle = True
-                elif mt in OUTPUT_MSGS and mine: on_output(mt, c)
-                elif mt in COMM_MSGS and self.on_comm is not None: self.on_comm(mt, c)
+            async for o in self.kc.run(code, on_stdin=self.on_stdin, on_comm=self.on_comm): on_output(o)
         finally: self.busy = False
 
-    async def complete(self, code, pos):
-        "Completion matches and the replace-start offset, via `complete_request`"
-        r = await self.kc.shell_request('complete_request', code=code, cursor_pos=pos)
-        c = r['content']
-        return c.get('matches', []), c.get('cursor_start', pos)
-
-    async def check(self, code):
-        "('complete'|'incomplete'|'invalid'|'unknown', indent) via `is_complete_request`"
-        r = await self.kc.shell_request('is_complete_request', code=code)
-        c = r['content']
-        return c.get('status', 'unknown'), c.get('indent', '')
-
-    async def inspect(self, code, pos, detail=0):
-        "Inspection text ('' when nothing found) via `inspect_request` -- signatures and docs, ANSI-styled"
-        r = await self.kc.shell_request('inspect_request', code=code, cursor_pos=pos, detail_level=detail)
-        c = r['content']
-        return c.get('data', {}).get('text/plain', '') if c.get('found') else ''
-
-    async def interrupt(self): await self.km.interrupt_kernel()
+    async def interrupt(self): await self.mgr.interrupt_kernel(self.kid)
 
     async def close(self):
-        if self.kc is not None: self.kc.stop_channels()
-        if self.km is not None and await self.km.is_alive(): await self.km.shutdown_kernel()
+        "Close the client (`kc.__aexit__` is the ownership contract: an owned kernel shuts down, an attached one survives)."
+        if self.kc is not None: await self.kc.__aexit__()
 
     async def __aenter__(self): return await self.start()
     async def __aexit__(self, *exc): await self.close()

@@ -1,8 +1,6 @@
 "Shared tool registry + local namespace bridge. Kernel-backed bridge lives in kernel_bridge.py."
 import inspect, json
 
-from toolslm.funccall import get_schema_nm
-
 from .kernel_bridge import CUSTOM_TOOL_NAMES
 
 
@@ -16,6 +14,7 @@ class LocalBridge:
     async def available_names(self, force=False): return [o for o in CUSTOM_TOOL_NAMES if callable(self.ns.get(o))]
 
     async def schemas(self):
+        from fastcore.funccall import get_schema_nm   # test-time only: the kernel bridge gets schemas kernel-side
         out = []
         for name in await self.available_names():
             try: out.append(dict(type="function", function=get_schema_nm(name, self.ns, pname="parameters")))

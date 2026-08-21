@@ -12,14 +12,15 @@ from teleprint.compositor import Compositor
 from teleprint.tty import RealTty
 from teleprint.widgets import CompletionMenu, Tooltip, Signature
 from teleprint.transcript import TranscriptView
-from teleprint.jobs import spawn_shell, relay_shell, finish_job
+from .shell import GateShell
 import aidialog.ipynb  # noqa: F401 -- activates the Message.cell_meta/to_cell patches (meta_attrs serialization)
+from aidialog.msg_parts import Text as TextPart, ToolUse, ToolResult
 from fastcore.ansi import strip_ansi
 from fastcore.basics import str_enum
 from fastcore.script import call_parse
-from .sig import call_context, parse_sig_text, active_param
 from .kernel import KernelSession
 from .history import History
+from .session import Session, list_sessions, resolve_session
 from .assistant import Assistant, route, code_blocks
 from .config import load_config
 from .reply import TurnRenderer
@@ -51,8 +52,7 @@ def _gutter(kind):
 def _text(t): return ''.join(t) if isinstance(t, list) else (t or '')
 
 def _default_history():
-    try: return History(cwd=os.getcwd())  # nav + ghost text draw only on this directory's sessions
-    except Exception: return None  # no IPython history db yet: arrows and ghost text just stay off
+    return History()  # nav + ghost text draw only on this directory's session files
 
 def _hl(code, theme='ansi_dark'):
     "Syntax-highlight `code` the one true way, dropping the newline highlight() appends."
@@ -67,7 +67,7 @@ class App:
         self.cfg = cfg or {}
         self.k = KernelSession() if kernel is None else kernel
         self.hist = _default_history() if history == 'default' else history  # None = off (tests want hermeticity)
-        self.comp = Compositor(tty).start()
+        self.comp = Compositor(tty)  # main awaits comp.start() before painting; tests mostly skip it (a fresh EmuTty gives origin 0 unstarted either way -- the nonzero-origin path has its own test)
         self.buf = Buffer()
         self.stream = None   # the growing stdout block of the in-flight cell
         self.menu = None     # a teleprint CompletionMenu while completing; Tab/shift+Tab cycle, Enter accepts
@@ -82,7 +82,7 @@ class App:
         if self.hist and self.mode != 'code': self.hist.mode = self.mode; self.hist.refresh()  # match a prompt_mode start
         self.ai_task = None      # the in-flight run_prompt task
         self.ai_sugg = None      # (text, cursor, suggestion): an Alt-. suggestion, valid while the buffer is unchanged
-        self.cell_outputs = None # raw (msg_type, content) records of the running cell, for ctx + persistence
+        self.cell_outputs = None # nbformat-shaped output records of the running cell, for ctx + persistence
         self._cycle = dict(idx=-1, resp='')  # alt-shift-up/down cycling over the last reply's fenced blocks
         self.fg_job = None       # (shell, mirror) while a borrow owns the terminal (SIGWINCH forwards here)
         self.shell = None        # the persistent shell Job (lazy; respawns after `exit`)
@@ -93,6 +93,8 @@ class App:
         self.picker = None       # startup session-picker rows while open (an over transient; owns digits/Enter/n/Esc)
         self._ipyai_comm = None  # the kernel-side %ipyai comm id, set on comm_open
         self._pending = None   # input queued while an enter decision's round-trip is in flight (see on_enter)
+        self.stdin_fut = None  # a pending kernel input_request; Enter answers it (see _on_stdin)
+        self.k.on_stdin = self._on_stdin
         self._load_codes = []   # code cells queued by load_dialog for run_loaded
         self.k.on_comm = self._on_comm
         self.comp.on_key = self.on_key
@@ -190,10 +192,10 @@ class App:
     def _picker_rows(self):
         "The startup session picker as over-transient rows: digit picks (click too), Enter newest, n/Esc fresh."
         out = [Text(' resume a session in this directory ', style='reverse')]
-        for i, (sid, cwd, backend, n, last) in enumerate(self.picker, 1):
+        for i, (path, mtime, n, first) in enumerate(self.picker, 1):
             t = Text(f' {i} ', style=Style(reverse=True) + Style(meta={'act': f'pick:{i - 1}'}))
-            t.append(f' {backend}  {n} prompt{"s" if n != 1 else ""}  ', style=Style(meta={'act': f'pick:{i - 1}'}))
-            t.append((last or '').replace('\n', ' ')[:50], style='dim')
+            t.append(f' {Path(path).stem[:8]}  {n} prompt{"s" if n != 1 else ""}  ', style=Style(meta={'act': f'pick:{i - 1}'}))
+            t.append((first or '').replace('\n', ' ')[:50], style='dim')
             out.append(t)
         out.append(Text(' Enter: newest · digit: pick · n/Esc: fresh ', style='dim'))
         return out
@@ -201,7 +203,7 @@ class App:
     def _pick(self, i):
         "Close the picker; `i` indexes the chosen row (None: start fresh)."
         rows, self.picker = self.picker, None
-        if i is not None and rows: self.load_session(rows[i][0])
+        if i is not None and rows: self.resume_session(rows[i][0])
         self.paint()
 
     def _picker_key(self, k):
@@ -268,29 +270,30 @@ class App:
         self.comp.tty.write(transmit)
         self.comp.print_block(Text.from_ansi(placeholder), gutter=_gutter('image'), tag='image', source=f'[image {w}x{h}px]')
 
-    def on_out(self, msg_type, c):
-        if self.cell_outputs is not None: self.cell_outputs.append((msg_type, c))  # the cell record: ctx + persistence
-        if msg_type == 'stream':
+    def on_out(self, c):
+        ot = c.get('output_type')
+        if self.cell_outputs is not None: self.cell_outputs.append(c)  # the cell record: ctx + persistence
+        if ot == 'stream':
             if self.stream is None: self.stream = self.comp.print_block(gutter=_gutter('out'), tag='out', collapse_at=self.collapse_at)
             txt = _text(c.get('text')).rstrip('\n')
             if txt: self.comp.extend(self.stream, Text(txt, style='red') if c.get('name') == 'stderr' else txt)
             self.stream.source = (self.stream.source or '') + _text(c.get('text'))
             return
         self.stream = None  # any non-stream output closes the growing block: only the LAST block can grow, and later stream text starts a fresh one (Jupyter's separate output areas)
-        if msg_type in ('execute_result', 'display_data'):
+        if ot in ('execute_result', 'display_data'):
             data = c.get('data', {})
             mime = next((m for m in ('image/png', 'image/jpeg') if m in data), None)
             if mime:
                 img = base64.b64decode(data[mime])
                 # Jupyter renders a same-cell `fig` twice (flush display_data + execute_result repr);
                 # suppress only a byte-identical execute_result repeat -- distinct images all render
-                if not (msg_type == 'execute_result' and hash(img) in self.cell_imgs):
+                if not (ot == 'execute_result' and hash(img) in self.cell_imgs):
                     self.cell_imgs.add(hash(img))
                     self.show_image(img)
             elif 'text/plain' in data:
                 t = _text(data['text/plain'])
                 self.comp.print_block(t, gutter=_gutter('result'), tag='result', collapse_at=self.collapse_at, source=t)
-        elif msg_type == 'error':
+        elif ot == 'error':
             tb = Text.from_ansi('\n'.join(c.get('traceback', [])))
             self.comp.print_block(tb, gutter=_gutter('error'), tag='error', source=tb.plain)  # errors always print open
 
@@ -307,22 +310,34 @@ class App:
 
     async def _kernel_cwd(self):
         "The kernel's cwd, queried per spawn: bare-`!` jobs and kernel-side `!` should agree on where they run."
-        try: return await self.k.kc.eval_expr("__import__('os').getcwd()")
+        try: return await self.k.kc.eval("__import__('os').getcwd()", _call=False)
         except Exception: return os.getcwd()
 
     def _job_note(self, s): self.comp.print_block(Text(s, style='dim'), gutter=_gutter('out'), tag='out')
 
+    async def _on_stdin(self, prompt, password):
+        "Answer a kernel `input()` from the composer: the prompt paints as a block, the next Enter's text replies."
+        if prompt: self.comp.print_block(Text(prompt), gutter=_gutter('out'), tag='out', source=prompt)
+        self.stdin_fut = asyncio.get_running_loop().create_future()
+        self.paint()
+        try: return await self.stdin_fut
+        finally: self.stdin_fut = None
+
     async def _ensure_shell(self):
-        """The persistent shell, spawned lazily on first use: interactive bash as session leader
-        of its own pty, so `cd`/exports/aliases and the jobs table (`fg`/`bg`/`jobs`/ctrl-Z)
-        persist and belong to the shell. The first-prompt relay absorbs rc noise; between
-        borrows a drain task pumps the pty (bg job output) into a rolling mirror."""
+        """The persistent shell, spawned lazily on first use: an owned gateway terminal beside the
+        kernel (fresh per session, deleted on exit), so `cd`/exports/aliases and the jobs table
+        (`fg`/`bg`/`jobs`/ctrl-Z) persist and belong to the shell. The first-prompt relay absorbs
+        rc noise; between borrows a drain task pumps the channel (bg job output) into a rolling mirror."""
         if self.shell is not None: return
-        self.shell = spawn_shell(size=self.tty.size, cwd=await self._kernel_cwd())
+        try: self.shell = await GateShell(self.k.url, size=self.tty.size, cwd=await self._kernel_cwd()).start()
+        except Exception as e:
+            self.shell = None
+            raise RuntimeError(f'shell failed to start: {e}')
         self.shell_pwd = None
         boot = pyghostty.Terminal(*self.tty.size)
-        res = await relay_shell(self.shell, mirror=boot)
+        res = await self.shell.relay(mirror=boot)
         if res == 'eof':
+            await self.shell.close()
             self.shell = None
             raise RuntimeError('shell failed to start')
         self.shell_pwd = res[2]
@@ -330,7 +345,7 @@ class App:
 
     def _start_drain(self):
         self._shdrain_mirror = pyghostty.Terminal(*self.tty.size)
-        self._shdrain = asyncio.ensure_future(relay_shell(self.shell, mirror=self._shdrain_mirror))
+        self._shdrain = self.comp.spawn(self.shell.relay(mirror=self._shdrain_mirror), name='shdrain')
 
     async def _stop_drain(self):
         "Take the pty back from the drain; anything a bg job printed while we were away becomes a block."
@@ -343,7 +358,7 @@ class App:
             blk = self.comp.print_block(Text(left, style='dim'), gutter=_gutter('out'), tag='out',
                                         collapse_at=self.collapse_at, source=left)
             if self.assistant is not None:
-                m = self.assistant.add_cell('!# background output', [('stream', dict(name='stdout', text=left + '\n'))])
+                m = self.assistant.add_cell('!# background output', [dict(output_type='stream', name='stdout', text=left + '\n')])
                 if m is not None: blk.msg_id = m.id  # stamped here so the enclosing exchange's stamp skips it
 
     async def run_job(self, cmd, record=True):
@@ -360,19 +375,20 @@ class App:
         self.comp.release()
         self.tty.raw()
         self.fg_job = (self.shell, mirror)
-        os.write(self.shell.master_fd, cmd.encode() + b'\n')
-        try: res = await relay_shell(self.shell, self.tty.write, mirror=mirror, in_fd=fd)
+        self.shell.write(cmd.encode() + b'\n')
+        try: res = await self.shell.relay(self.tty.write, mirror=mirror, in_fd=fd)
         finally:
             self.fg_job = None
             self.tty.cooked()
-            self.comp.reanchor()
+            await self.comp.reanchor()
             if reading: loop.add_reader(fd, self._read_tty)
         resid = mirror.contents().rstrip()
         if res == 'eof':  # the shell itself exited (`exit`, or death): respawn fresh on next use
-            finish_job(self.shell)
-            self.shell = None
+            sh, self.shell = self.shell, None
+            await sh.close()  # delete the dead terminal's registry entry
             if record: self._record_shell_cell(cmd, resid, 0)
-            return self._job_note('shell exited; a fresh one starts on the next shell command')
+            why = f'shell connection lost: {sh.error!r}' if sh.error else 'shell exited'
+            return self._job_note(f'{why}; a fresh one starts on the next shell command')
         _, ec, pwd = res
         if record:
             self._record_shell_cell(cmd, resid, ec)
@@ -404,43 +420,41 @@ class App:
         "The residue records as an ordinary `!cmd` cell: model-only block (its bytes are already on glass) + dialog cell."
         if resid: self.comp.record_block(resid, gutter=_gutter('out'), tag='out', collapse_at=self.collapse_at, source=resid)
         if self.assistant is not None:
-            outs = [('stream', dict(name='stdout', text=resid + '\n'))] if resid else []
-            if ec: outs.append(('stream', dict(name='stderr', text=f'[exit {ec}]\n')))
+            outs = [dict(output_type='stream', name='stdout', text=resid + '\n')] if resid else []
+            if ec: outs.append(dict(output_type='stream', name='stderr', text=f'[exit {ec}]\n'))
             self.assistant.add_cell(f'!{cmd}', outs)
 
     async def _sync_kernel_cwd(self, pwd):
         "cwd flows shell -> kernel after each shell command, so the two worlds agree about where you are."
-        try: await self.k.kc.eval_expr(f"__import__('os').chdir({pwd!r}) or True")
+        try: await self.k.kc.reply(f"import os; os.chdir({pwd!r})", silent=True, store_history=False, timeout=5)
         except Exception: pass
 
-    def _shell_children(self):
-        "Live children of the persistent shell (the quit gate's evidence), as 'pid name' lines."
-        if self.shell is None: return []
-        try:
-            out = subprocess.run(['pgrep', '-l', '-P', str(self.shell.pid)], capture_output=True, text=True).stdout
-            return [l for l in out.splitlines() if l.strip()]
-        except Exception: return []
-
     async def attach_assistant(self, resume=None, load=None, fresh=False):
-        """Wire the AI side to the live kernel: bridge + tools, persistence into the kernel's own
-        history db, optional resume/dialog load. `fresh` (the plain-launch default) starts a new
-        session; `resume=N` resumes that session; neither (bare `-r`) applies directory scoping:
-        no past session here starts fresh, exactly one resumes it silently, several open the
-        startup picker (a transient: digits pick, Enter = newest, n/Esc = fresh)."""
+        """Wire the AI side to the live kernel: bridge + tools, a session file under `./.ipyai/sessions/`,
+        optional resume/dialog load. `fresh` (the plain-launch default) starts a new session;
+        `resume=PREFIX` resumes that session file; bare `-r` lists this directory's sessions in the
+        startup picker (a transient: digits pick, Enter = newest, n/Esc = fresh). An attached
+        (non-owned) kernel is taken as found: bridge and registry, but no seeding."""
         from .bridge import setup_tools
-        from .store import Store
-        bridge, tools = await setup_tools(self.k.kc)
-        try: await bridge._exec("get_ipython().extension_manager.load_extension('ipyai.magic')")
-        except Exception: pass  # kernel without ipyai installed: %ipyai just won't exist there
+        if self.k.owned:
+            bridge, tools = await setup_tools(self.k.kc)
+            try: await bridge._exec("get_ipython().extension_manager.load_extension('ipyai.magic')")
+            except Exception: pass  # kernel without ipyai installed: %ipyai just won't exist there
+        else:
+            from .kernel_bridge import KernelBridge
+            from .tooling import ToolRegistry
+            bridge = KernelBridge(self.k.kc)
+            tools = ToolRegistry(bridge)
         if self.assistant is None: self.assistant = Assistant(cfg=self.cfg or None)
         self.assistant.tools, self.assistant.bridge = tools, bridge
-        path, session = await bridge.history_db_info()
-        self.assistant.store = Store(path, session, cwd=os.getcwd(), backend=self.assistant.model)
-        if resume is not None and self.assistant.store is not None: self.load_session(resume)
-        elif not fresh and load is None and self.assistant.store is not None:
-            rows = [r for r in self.assistant.store.sessions(cwd=os.getcwd()) if r[0] >= 0]
-            if len(rows) == 1: self.load_session(rows[0][0])
+        if resume is not None: self.resume_session(resolve_session(resume))
+        elif not fresh and load is None:
+            rows = list_sessions()
+            if len(rows) == 1: self.resume_session(rows[0][0])
             elif rows: self.picker = rows[:9]  # the startup picker paints as an over transient once run() starts
+        if self.assistant.session is None: self.assistant.session = Session()
+        a = self.assistant
+        a.dlg.meta['ipyai'] = {**a.dlg.meta.get('ipyai', {}), 'kernel_id': self.k.kid}
         if load is not None:
             self._job_note(self.load_dialog(load))   # the one ack: the comm path's ack arrives as magic output instead
             await self.run_loaded()
@@ -453,8 +467,8 @@ class App:
             d = c.get('data', {})
             try: reply = dict(req=d.get('req'), text=self._ipyai_cmd(list(d.get('cmd') or [])))
             except Exception as e: reply = dict(req=d.get('req'), error=str(e))
-            self.k.kc.shell_request('comm_msg', reply=False, comm_id=self._ipyai_comm, data=reply)
-            if self._load_codes: asyncio.ensure_future(self.run_loaded())  # after the ack: the magic holds the kernel until the reply lands
+            self.k.kc._exec_req('comm_msg', content=dict(comm_id=self._ipyai_comm, data=reply))
+            if self._load_codes: self.comp.spawn(self.run_loaded(), name='run-loaded')  # after the ack: the magic holds the kernel until these run
 
     def _ipyai_cmd(self, args):
         "One %ipyai command against app/assistant state; returns the ack text. Settings are session-only."
@@ -477,12 +491,12 @@ class App:
             self.paint()
             return f'mode = {self.mode}'
         if cmd == 'sessions':
-            if a.store is None: raise RuntimeError('no session store attached')
-            return _sessions_text(a.store.sessions(cwd=os.getcwd()))
+            return _sessions_text(list_sessions())
         if cmd == 'reset':
             a.reset()
-            if a.store is not None and rest: a.store.set_session(int(rest[0]), cwd=os.getcwd(), backend=a.model)
-            return 'reset: fresh conversation' + (f' (session {a.store.session})' if a.store is not None else '')
+            a.session = Session()
+            a.dlg.meta['ipyai'] = {**a.dlg.meta.get('ipyai', {}), 'kernel_id': self.k.kid}
+            return f'reset: fresh conversation (session {a.session.path.stem[:8]})'
         if cmd == 'save':
             if not rest: raise ValueError('usage: %ipyai save PATH')
             p = Path(rest[0]).expanduser()
@@ -498,7 +512,7 @@ class App:
     def _replay_output(self, o):
         "Render one stored nbformat output: the dict shapes match iopub content, so on_out replays them directly."
         ot = o.get('output_type')
-        if ot in ('stream', 'display_data', 'execute_result', 'error'): self.on_out(ot, o)
+        if ot in ('stream', 'display_data', 'execute_result', 'error'): self.on_out(o)
 
     def _replay_reply(self, response):
         "Render a stored reply through the same block machinery: fmt2hist recovers text and tool parts."
@@ -512,43 +526,41 @@ class App:
             return
         for m in msgs:
             for p in m.content:
-                if getattr(p, 'type', None) is None: continue
-                if p.type.name == 'text' and p.text and m.role == 'assistant':
-                    t = '\n'.join(l for l in p.text.splitlines() if not (l.startswith('- ⏳') and l.endswith('⏳')))
-                    if t.strip(): tr.md.feed(t)
-                elif p.type.name in ('tool_use', 'tool_result'): tr.event(p)
+                if isinstance(p, TextPart) and p.text and m.role == 'assistant':
+                    if p.text.strip(): tr.md.feed(p.text)
+                elif isinstance(p, (ToolUse, ToolResult)): tr.event(p)
         tr.done()
 
-    def load_session(self, session):
-        "Resume: print a past session's blocks from the store and rebuild the session Dialog to continue it (no kernel state is rebuilt)."
-        from aidialog.dialog import prompt_output
-        st = self.assistant.store
-        events = st.load_session(session)
-        if not events:
-            self.comp.print_block(Text(f'session {session}: nothing stored', style='dim'), gutter=_gutter('error'), tag='error')
+    def resume_session(self, path):
+        "Resume: paint a session file's transcript and adopt its Dialog, continuing in the same file (no kernel state is rebuilt)."
+        from aidialog.ipynb import read_ipynb
+        dlg = read_ipynb(path)
+        if dlg is None:
+            self.comp.print_block(Text(f'{path}: cannot read session', style='dim'), gutter=_gutter('error'), tag='error')
             return
         a = self.assistant
-        for ev in events:
+        for m in dlg.messages:
             before = next(reversed(self.comp.blocks), 0)
-            if ev['kind'] == 'cell':
-                self.comp.print_block(_hl(ev['source'], self.theme), gutter=_gutter('in'), tag='in', source=ev['source'], pad=True)
+            if m.msg_type in ('code', 'note'):
+                body = _hl(m.content, self.theme) if m.msg_type == 'code' else Text(m.content)
+                self.comp.print_block(body, gutter=_gutter('in'), tag='in', source=m.content, pad=True)
                 self.stream = None
                 self.cell_imgs = set()
-                for o in ev['outputs']: self._replay_output(o)
+                for o in (m.output or []): self._replay_output(o)
                 self.stream = None
-                m = a.dlg.mk_message(ev['source'], msg_type='code', output=ev['outputs'], **ev['meta'])
                 a.n_cells += 1
-                m.store_line, m.store_session = ev['line'], session   # cells key by (session, line): a resumed message must update ITS session's row
-            else:
-                self.comp.print_block(Text(ev['prompt'], style='bold'), gutter=_gutter('ask'), tag='ask', source=ev['prompt'], pad=True)
-                self._replay_reply(ev['response'])
-                m = a.dlg.mk_message(ev['prompt'], msg_type='prompt', output=prompt_output(ev['response']), **ev['meta'])
-                a.last_response = ev['response']
-                m.store_id = ev['id']
+            elif m.msg_type == 'prompt':
+                self.comp.print_block(Text(m.content, style='bold'), gutter=_gutter('ask'), tag='ask', source=m.content, pad=True)
+                self._replay_reply(m.ai_res)
+                a.last_response = m.ai_res
+            else: continue
             for bid, b in self.comp.blocks.items():
                 if bid > before:
                     b.msg_id = m.id
                     if m.skipped: b.dim = True  # a hide from a past session shows dim on replay too
+        a.dlg = dlg
+        a.dlg.meta['ipyai'] = {**a.dlg.meta.get('ipyai', {}), 'kernel_id': self.k.kid}
+        a.session = Session(path=path)
 
     def load_dialog(self, path):
         """Import a Dialog .ipynb (%ipyai save's output, or any notebook) as the session model. Nothing is
@@ -577,14 +589,14 @@ class App:
         for code in codes: await self.k.run(code, self._silent_out)
         self.paint()
 
-    def _silent_out(self, msg_type, c):
+    def _silent_out(self, c):
         "Output handler for `run_loaded`: only errors surface (errors always print open)."
-        if msg_type == 'error':
+        if c.get('output_type') == 'error':
             tb = Text.from_ansi('\n'.join(c.get('traceback', [])))
             self.comp.print_block(tb, gutter=_gutter('error'), tag='error', source=tb.plain)
 
     async def do_complete(self):
-        matches, start = await self.k.complete(self.buf.text, self.buf.cursor)
+        matches, start = await self.k.kc.complete(self.buf.text, self.buf.cursor)
         self.tip = None
         if matches:
             m = CompletionMenu(self.buf, matches, start)
@@ -597,19 +609,18 @@ class App:
         self.paint()
 
     async def do_inspect(self):
-        """shift+Tab: inside a call, a Signature panel with the active param bold (inspecting the callable,
-        not the token under the cursor); otherwise the full inspect text as a tooltip."""
-        ctx = call_context(self.buf.text, self.buf.cursor)
-        pos = ctx[0] if ctx else self.buf.cursor
-        text = await self.k.inspect(self.buf.text, pos)
+        """shift+Tab: inside a call, a Signature panel with the active param bold (the kernel's `sig_help`
+        computes the signature and active index); otherwise the full inspect text as a tooltip."""
+        lines = self.buf.text[:self.buf.cursor].split('\n')
+        try: sigs = await self.k.kc.sig_help(code=self.buf.text, line_no=len(lines), col_no=len(lines[-1]))
+        except Exception: sigs = []
         self.menu = None
         self.tip = None
-        if text:
-            sig = parse_sig_text(strip_ansi(text)) if ctx else None
-            if sig:
-                name, params, doc = sig
-                self.tip = Signature(name, params, active_param(params, ctx[1]), doc)
-            else: self.tip = Tooltip(Text.from_ansi(text))
+        if sigs and isinstance(sigs, list):
+            s = sigs[0]
+            self.tip = Signature(s['label'], [p['desc'] for p in s['params']], s.get('idx'), s.get('doc', ''))
+        elif text := await self.k.kc.inspect(self.buf.text, self.buf.cursor):
+            self.tip = Tooltip(Text.from_ansi(text))
         self.paint()
 
     def _dismiss(self):
@@ -638,7 +649,9 @@ class App:
         q, self._pending = self._pending, None
         for ev in q:
             if isinstance(ev, str): self.on_paste(ev)
-            else: self.on_key(ev)
+            else:
+                r = self.on_key(ev)
+                if asyncio.iscoroutine(r): self.comp.spawn(r, name='replayed-key')  # same contract as the compositor's dispatcher
 
     async def on_enter(self):
         """Routed Enter (the `.`/`;`/`!`/`%` dispatch): prompts always submit -- English is never
@@ -657,7 +670,7 @@ class App:
                 self._submit(text, payload, sh=True)
                 run = self.run_job(payload)
             else:
-                status, indent = await self.k.check(payload)
+                status, indent = await self.k.kc.check(payload)
                 if self.buf.text != text or self.busy: return  # changed or a run started mid-flight: stale decision
                 if status == 'incomplete': self.buf.insert('\n' + ('' if self._pending else indent))  # a burst carries its own indentation
                 else:
@@ -743,12 +756,8 @@ class App:
         a.dlg.remove_msgs(dropped)
         for b in [b for b in self.comp.blocks.values() if getattr(b, 'msg_id', None) in ids]:
             self.comp.remove_block(b)
-        if a.store:
-            sessions = {a.store.session} | {s for x in dropped if (s := getattr(x, 'store_session', None)) is not None}
-            if m.msg_type == 'prompt' and getattr(m, 'store_id', None) is not None:
-                a.n_cells = a.store.truncate(prompt_id=m.store_id, sessions=sessions)
-            elif getattr(m, 'store_line', None) is not None:
-                a.n_cells = a.store.truncate(line=m.store_line, sessions=sessions) - 1
+        a.n_cells = sum(1 for x in a.dlg.messages if x.msg_type in ('code', 'note'))
+        a.save()
 
 
     def _jump_exchange(self, d):
@@ -777,9 +786,7 @@ class App:
         m.skipped = 0 if m.skipped else 1
         for b in self.comp.blocks.values():
             if getattr(b, 'msg_id', None) == m.id: b.dim = bool(m.skipped)  # the dim setter invalidates the row cache
-        if self.assistant.store:
-            if getattr(m, 'store_line', None) is not None: self.assistant.store.set_cell_meta(m.store_line, m.cell_meta(), session=getattr(m, 'store_session', None))
-            elif getattr(m, 'store_id', None) is not None: self.assistant.store.set_prompt_meta(m.store_id, m.cell_meta())
+        self.assistant.save()
         tv.msg = 'hidden from AI' if m.skipped else 'visible to AI'
         tv.rebuild()
 
@@ -820,8 +827,6 @@ class App:
                 if first: self.comp.set_body(b, Markdown(text, code_theme=self.theme), source=text)
                 else: self.comp.set_body(b)  # height 0: the sibling vanishes from the window; scrollback keeps it
                 first = False
-            if self.assistant.store and getattr(m, 'store_id', None) is not None:
-                self.assistant.store.update_prompt(m.store_id, response=text)
             if m is self.assistant.dlg.messages[-1]: self.assistant.last_response = text
         else:
             m.content = text
@@ -829,11 +834,7 @@ class App:
             if b is not None:
                 body = _hl(text, self.theme) if b.tag == 'in' else Text(text)
                 self.comp.set_body(b, body, source=text)
-            if self.assistant.store:
-                if m.msg_type == 'prompt' and getattr(m, 'store_id', None) is not None:
-                    self.assistant.store.update_prompt(m.store_id, prompt=text)
-                elif getattr(m, 'store_line', None) is not None:
-                    self.assistant.store.update_cell(m.store_line, text, session=getattr(m, 'store_session', None))
+        self.assistant.save()
         tv.msg = 'written'
         tv.rebuild()
 
@@ -855,7 +856,7 @@ class App:
         elif k.name == 'enter' and self.buf.text and not self.busy:
             tv.leave()  # Enter with content submits AND returns to the live screen
             self._pending = []
-            asyncio.get_running_loop().create_task(self.on_enter())
+            self.comp.spawn(self.on_enter(), name='run')
             self.paint()
         elif k.name == 'enter':
             tv.toggle_current()
@@ -891,16 +892,10 @@ class App:
         if self.tv.active: return self._tv_key(k)
         if self.picker is not None: return self._picker_key(k)
         if k.name == 'ctrl+d' and not self.buf.text:
-            kids = self._shell_children()
-            if kids and not self._quit_warned:  # bash's convention: warn once, an immediate second C-D quits
+            if self.shell is not None and not self._quit_warned:  # bash's convention: warn once, an immediate second C-D quits
                 self._quit_warned = True
-                self._job_note(f'you have {len(kids)} shell job(s): ' + '; '.join(kids) + '  (C-D again quits and kills them)')
+                self._job_note('the shell (and any jobs in it) closes with the app  (C-D again quits)')
                 return
-            if self.shell is not None:  # a window-close: the shell's process group gets SIGHUP, taking its jobs
-                try:
-                    os.killpg(self.shell.pgid, signal.SIGHUP)
-                    os.killpg(self.shell.pgid, signal.SIGCONT)
-                except ProcessLookupError: pass
             self._dismiss()
             self.paint()  # one clean final frame: transient UI must never ink as exit debris
             self.done.set()
@@ -913,7 +908,7 @@ class App:
         if k.name == 'ctrl+o':
             live = [b for b in self.comp.blocks.values() if not b.committed]
             if live: self.comp.toggle(live[-1])
-        elif k.name == 'f2': asyncio.get_running_loop().create_task(self.edit_buffer())
+        elif k.name == 'f2': return self.edit_buffer()
         elif k.name == 'alt+r': self._recall_last()  # retry: recall the last exchange, submit REPLACES it (alt-up stays history)
         elif k.name == 'escape' and self.retry is not None:
             self.retry = None  # disarm: the composer keeps its text, submits append again
@@ -922,8 +917,7 @@ class App:
             self._set_mode(dict(p='prompt', c='code', s='shell')[k.name[4]])
             self._dismiss()
         elif k.name == 'alt+.':
-            if self.buf.text.strip() and not self.busy and self.assistant is not None:
-                asyncio.get_running_loop().create_task(self.do_ai_suggest())
+            if self.buf.text.strip() and not self.busy and self.assistant is not None: return self.do_ai_suggest()
         elif k.name == 'alt+W':
             bs = self._reply_blocks()
             if bs: self.buf.insert('\n'.join(bs))
@@ -941,15 +935,17 @@ class App:
             self.menu.cycle(-1)
         elif k.name == 'enter' and self.menu:
             self._dismiss()  # accepts the highlighted match; the next Enter submits
+        elif k.name == 'enter' and self.stdin_fut is not None and not self.stdin_fut.done():
+            text = self.buf.text   # a kernel input() owns this Enter: the composer line answers it
+            self.buf.clear()
+            self.stdin_fut.set_result(text)
         elif k.name == 'enter' and self.buf.text and not self.busy:
             self._pending = []
-            asyncio.get_running_loop().create_task(self.on_enter())
+            return self.on_enter()
         elif k.name == 'alt+enter':  # always a newline: the codex/Claude convention
             self.buf.insert('\n')
-        elif k.name == 'tab' and self.buf.text and not self.k.busy:
-            asyncio.get_running_loop().create_task(self.do_complete())
-        elif k.name == 'shift+tab' and self.buf.text and not self.k.busy:
-            asyncio.get_running_loop().create_task(self.do_inspect())
+        elif k.name == 'tab' and self.buf.text and not self.k.busy: return self.do_complete()
+        elif k.name == 'shift+tab' and self.buf.text and not self.k.busy: return self.do_inspect()
         elif k.name in ('up', 'alt+up'):
             self._dismiss()
             if not (k.name == 'up' and self.buf.handle(k)) and self.hist:
@@ -967,8 +963,9 @@ class App:
         self.paint()
 
     def on_sigint(self):
+        "The ctrl-C policy, reached as a key: in-band at rest, synthesized by the compositor's SIGINT handler otherwise."
         if self.assistant is not None and self.assistant.cancel_turn(): return  # ctrl-C stops the AI turn first
-        if self.k.busy: asyncio.get_running_loop().create_task(self.k.interrupt())
+        if self.k.busy: self.comp.spawn(self.k.interrupt(), name='interrupt')
         else:
             self.buf.clear()
             self.ai_sugg = None
@@ -976,52 +973,53 @@ class App:
 
     def _read_tty(self): self.comp.on_bytes(os.read(self.tty.fd, 4096))
 
+    def _task_error(self, e, t):
+        "A spawned background task failed: an error block beats a stderr traceback through the raw-mode screen."
+        self.comp.print_block(Text(f'{t.get_name()} failed: {e!r}', style='red'), gutter=_gutter('error'), tag='error')
+        self.paint()
+
+    def _resized(self):
+        "The whole WINCH response (comp.on_resize): forward to shell/job, repaint only when we own the screen."
+        if self.shell is not None and self.fg_job is None:
+            self.shell.resize(*self.tty.size)   # idle shell follows the terminal (its pty winsize WINCHes children)
+        if self.fg_job is not None:
+            job, mirror = self.fg_job
+            job.resize(*self.tty.size)
+            mirror.resize(*self.tty.size)
+            return  # the job owns the screen; the compositor adopts the new size at reanchor
+        if self.tv.active: self.tv.leave()  # a rewrap invalidates the view; re-enter is one keystroke
+        self.comp.resize()  # synchronous now: adopt size + repaint from the model
+        self.paint()    # then rebuild the tail at the new width
+
     async def run(self):
-        "The real-terminal main loop: tty reader, signal handlers, escape-timeout ticker."
+        "The real-terminal main loop: tty reader, the compositor's signals, escape-timeout ticker."
         loop = asyncio.get_running_loop()
         loop.add_reader(self.tty.fd, self._read_tty)
-        loop.add_signal_handler(signal.SIGINT, self.on_sigint)
-        def resized():
-            if self.shell is not None and self.fg_job is None:
-                self.shell.resize(*self.tty.size)   # idle shell follows the terminal (its pty winsize WINCHes children)
-            if self.fg_job is not None:
-                job, mirror = self.fg_job
-                job.resize(*self.tty.size)
-                mirror.resize(*self.tty.size)
-                return  # the job owns the screen; the compositor adopts the new size at reanchor
-            if self.tv.active: self.tv.leave()  # a rewrap invalidates the view; re-enter is one keystroke
-            self.comp.resize()  # synchronous now: adopt size + repaint from the model
-            self.paint()    # then rebuild the tail at the new width
-        loop.add_signal_handler(signal.SIGWINCH, resized)
+        self.comp.on_resize = self._resized
+        self.comp.on_task_error = self._task_error
         async def ticker():
             while True:
                 await asyncio.sleep(0.2)
                 self.comp.flush_input()
                 if self.busy and not self.tv.active: self.paint()  # the throbber cell animates on the ticker's clock
-        t = asyncio.ensure_future(ticker())
+        t = self.comp.spawn(ticker(), name='ticker')
         try:
             self.paint()
             await self.done.wait()
         finally:
             t.cancel()
             loop.remove_reader(self.tty.fd)
-            for s in (signal.SIGINT, signal.SIGWINCH): loop.remove_signal_handler(s)
+            self.comp.stop()
 
 def _sessions_text(rows):
     "Past-session rows as the table %ipyai sessions and --sessions both show."
-    rows = [r for r in rows if r[0] >= 0]
     if not rows: return 'No ipyai sessions found for this directory.'
-    lines = [f"{'ID':>6}  {'Model':28}  {'Prompts':>7}  Last prompt"]
-    for sid, _, model, n, last in rows:
-        lp = (last or '').replace('\n', ' ')[:60]
-        lines.append(f'{sid:>6}  {model or "":28}  {n:>7}  {lp}')
+    lines = [f"{'Session':10}  {'When':16}  {'Prompts':>7}  First prompt"]
+    for path, mtime, n, first in rows:
+        fp = (first or '').replace('\n', ' ')[:60]
+        when = time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))
+        lines.append(f'{Path(path).stem[:8]:10}  {when:16}  {n:>7}  {fp}')
     return '\n'.join(lines)
-
-def _list_sessions(cwd):
-    "Print past ipyai sessions from the shared history db (no kernel needed: the path is IPython's default)."
-    from .history import hist_path
-    from .store import Store
-    print(_sessions_text(Store(hist_path()).sessions(cwd=cwd)))
 
 Think = str_enum('Think', 'l', 'm', 'h', 'x')
 
@@ -1032,14 +1030,15 @@ async def main(
     think:Think=None,        # think effort
     code_theme:str=None,     # code highlight theme ('auto' detects from the terminal background)
     Prompt_mode:bool=False,  # start in prompt mode
-    Resume:Annotated[int, "resume a past session: bare -r picks from this directory's sessions, -r N resumes session N", dict(nargs='?', const=-1)]=None,
+    kernel:str=None,         # attach to an existing gateway kernel by id prefix (taken as found, never stopped on exit)
+    Resume:Annotated[str, "resume a session: bare -r picks from this directory's sessions, -r PREFIX resumes that session file (warm-attaching its kernel when still alive)", dict(nargs='?', const='')]=None,
     Load:str=None,           # load a dialog .ipynb into the session at startup
     sessions:bool=False,     # list past ipyai sessions for this directory and exit
 ):
-    "IPython + AI on the teleprint transcript (plain launch always starts a fresh session)"
+    "IPython + AI on the teleprint transcript (plain launch always starts a fresh session; rustygate must be running)"
     import faulthandler
     faulthandler.register(signal.SIGQUIT)  # C-\ prints every thread's stack and continues: a wedged app becomes diagnosable from the pane
-    if sessions: return _list_sessions(os.getcwd())
+    if sessions: return print(_sessions_text(list_sessions()))
     cfg = load_config()
     cfg |= {k: str(v) for k, v in dict(model=model, suggest_model=suggest_model,
                                        think=think, code_theme=code_theme).items() if v}
@@ -1048,13 +1047,23 @@ async def main(
     t.write('\x1b[?1000;1006h\x1b[?2004h')  # SGR mouse + bracketed paste
     try:
         app = App(t, cfg=cfg)
+        await app.comp.start()  # async now: the CPR await, and the compositor takes WINCH/INT/TERM/HUP
         app.detect_kitty()
         if cfg.get('code_theme', 'auto') == 'auto': app.detect_theme()
-        await app.k.start()
-        await app.attach_assistant(resume=Resume if (Resume or 0) > 0 else None, load=Load,
-                                    fresh=Resume is None)  # plain launch is fresh; bare -r (const -1) opens the picker
+        kid = kernel or ''
+        if Resume:  # explicit prefix: warm-attach the session's stamped kernel when it's still alive
+            from aidialog.ipynb import read_ipynb
+            d = read_ipynb(resolve_session(Resume))
+            kid = kid or (d.meta.get('ipyai', {}).get('kernel_id', '') if d is not None else '')
+        try: await app.k.start(kernel=kid)
+        except ValueError:
+            if kernel: raise            # an explicitly named kernel that's gone is an error, not a fallback
+            await app.k.start()         # the session's stamped kernel is gone: cold resume on a fresh kernel
+        await app.attach_assistant(resume=Resume or None, load=Load,
+                                    fresh=Resume is None)  # plain launch is fresh; bare -r (const '') opens the picker
         await app.run()
     finally:
         t.write('\x1b[?2004l\x1b[?1000;1006l\r\n')
         t.restore()
         if app.k.kc is not None: await app.k.close()
+        if app.shell is not None: await app.shell.close()  # the owned terminal dies with the session

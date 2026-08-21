@@ -1,7 +1,23 @@
 # DEV
 
-Plans and progress for the ipyaing rewrite live in [teleprint's DEV.md](../teleprint/DEV.md)
-(the transcript-first terminal UI effort: teleprint + pyghostty + ipymini + ipyai), for now.
+UI/compositor design notes live in [teleprint's DEV.md](../teleprint/DEV.md). This file covers ipyai's own architecture after the gateway/session-files clean break (2026-08), and what is deliberately not done yet.
 
-Everything previously in this file described the old in-process architecture
-(ZMQTerminalIPythonApp, per-backend clients, MCP socket bridge) and no longer applies.
+## Architecture
+
+ipyai is a rustygate client, like clikernel: `rustygate` runs all the time and hosts the kernels (its default spawn is ipymini); ipyai starts and stops per session and holds a pointer. `KernelSession` (kernel.py) wraps a `JupyAsyncMultiKernelManager` plus one kernel's ws client: bare `ipyai` creates an *owned* kernel (started in our cwd/env, seeded with `ipykernel_helper.core`, shut down on exit); `-k PREFIX` attaches to an existing kernel, taken as found — no seeding, never stopped by us. An unreachable gateway fails loudly at startup with the command to run; there is no auto-start.
+
+The wire conveniences (`reply`, `eval`, `sig_help`, `get_schemas`, `xpush`, ...) are jupyasyncclient's eval family; `kernel_bridge.py` is a thin tool-dispatch layer over them (`call_tool` via the kernel's `call_tool` for input coercion, `FullResponse` via `aidialog.msg_parts`). Kernel-side services come from `ipyfuncs` (signature help with active-param tracking, ranked completion, schemas), loaded via `ipykernel_helper` (which also provides `call_tool`).
+
+Sessions are files: each session is one aidialog Dialog written whole (atomically) to `./.ipyai/sessions/<uuid>.ipynb` on every event (solveit-precedented; the file is the only copy). `Dialog.meta['ipyai']` carries `kernel_id`/`model`/`think`. Resume (`-r PREFIX`) paints the transcript and continues in the same file, warm-attaching the stamped kernel when it is still alive (transcript + live state), else cold on a fresh kernel; bare `-r` opens the picker over this directory's files. Load (`%ipyai load`) remains the separate rebuild-state feature. History/ghost text mine the session files, mode-scoped by message type; directory scoping is the filesystem. IPython's history.sqlite is neither read nor written.
+
+The AI layer is aidialog: `dlg2hist` + the default prompt envelope; `$`/`!` refs parse with `get_exprs`/`sigil_pat` and render as one merged variables turn via `vars_hist` (`!` outputs keyed by their full ref form); missing vars warn via `warning_tag`; the interrupt marker is `aidialog.dialog.INTERRUPTED`. Tool activation still uses `CUSTOM_TOOL_NAMES` seeding; dialog-referenced `` &`tool` `` activation over `get_refs` is a small planned follow-up.
+
+The shell is a gateway terminal (settled 2026-08-04): shell-mode submissions run in an owned rustygate terminal (`shell.py`'s `GateShell` over `JupyAsyncTerminalClient`), fresh per session and deleted on exit, spawned in the kernel's cwd with the app's `TERM`/`COLORTERM` overlaid. The rc/sentinel choreography is teleprint's original (moved here when `teleprint/jobs.py` was deleted): it is entirely in-band, so `relay` keeps the old `relay_shell` contract over ws frames, and the shell↔kernel cwd sync is now coherent by construction — both live on the gateway's box. Watch-items: a `gap` control frame (client fell behind the gateway's 1MB replay ring) may in principle swallow a sentinel — the relay sinks a visible "press Enter if stuck" note rather than probing, since a probe newline could reach a foreground job's stdin; revisit if it ever bites (the 20k-line burst test streams gap-free today). Full-screen fidelity/latency through the ws bridge is untested beyond the alt-screen test; judge it in daily use.
+
+## Deliberately not done yet
+
+- **Remote gateways.** All the machinery accepts a URL (`IPYAI_GATEWAY`), but remote use still needs: token resolution shared with clikernel's `gateways.toml`, and `#ai`/media refs resolving against the wrong filesystem. (The shell↔kernel cwd concern is gone: the shell is a gateway terminal now, so it lives beside the kernel wherever the gateway is — remote bare-`!` becomes a remote shell for free, latency permitting.) Local-only until designed.
+- **`!` refs through the pty shell: rejected** (settled 2026-08-04). `!`cmd`` refs evaluate via the kernel's own `getoutput` over the bridge — stdout+stderr merged, kernel cwd, `var_expand` interpolation — identical semantics to solveit. The rule: backticked refs and embedded `!` live in the kernel; only shell-mode submissions touch the pty shell. Refs were never persistent-shell things (aliases/functions in a ref would diverge between hosts).
+- **`ranked_complete`.** Completion still rides `complete_request`; the kernel's `ranked_complete` is available over the bridge when wanted.
+- **Compaction.** Context management is compaction-shaped (not eviction), deferred; llmsurgery is its designated home. The ctx meter's measured `last_req_use` is the trigger signal.
+- **iopub between runs.** Bridge execs' iopub lands in the client queue and is skipped by parent-id filtering at the next run; the queue is unbounded in principle (silent execs emit almost nothing). Revisit if it ever matters.

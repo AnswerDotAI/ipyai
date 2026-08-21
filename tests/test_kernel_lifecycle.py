@@ -1,56 +1,24 @@
-"Separate kernel process: spawn + bootstrap + skip-existing-on-seed + shutdown."
-import asyncio
-
-from jupyter_client.asynchronous.client import AsyncKernelClient
-from jupyter_client.manager import KernelManager
-
+"Gateway kernel lifecycle: spawn an owned kernel, seed with skip semantics, shut down on close."
+from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
+from ipyai.kernel import KernelSession
 from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
 
 
-_BOOTSTRAP = ("from IPython import get_ipython\n"
-    "_ip = get_ipython()\n"
-    "try: _ip.extension_manager.load_extension('safepyrun')\n"
-    "except Exception: pass\n"
-    "_ip.history_manager.db_log_output = True\n")
-
-
-def test_spawn_bootstrap_skip_seed_shutdown():
-    km = KernelManager()
-    km.start_kernel(extra_arguments=["--HistoryManager.enabled=True"])
-    loop = asyncio.new_event_loop()
-
-    try:
-        async def _go():
-            client = AsyncKernelClient()
-            client.load_connection_file(km.connection_file)
-            client.start_channels()
-            await client.wait_for_ready(timeout=30)
-            bridge = KernelBridge(client)
-
-            await bridge._exec(_BOOTSTRAP)
-            present_after_bootstrap = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-            assert "python" in present_after_bootstrap, "safepyrun extension should seed python"
-
-            await bridge._exec("def bash(**kw): return 'sentinel-preseeded'")
-            present_with_preseed = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-            assert "bash" in present_with_preseed, "preseeded callable should count as present"
-
-            await bridge.seed_tools(skip=present_with_preseed)
-
-            res = await bridge.call_tool("bash", {})
-            assert "sentinel-preseeded" in res, f"seed_tools with skip should have preserved preseeded bash; got {res!r}"
-
-            await bridge._exec("globals().pop('bash', None)")
-            await bridge.seed_tools(skip=set(await bridge.present_names(CUSTOM_TOOL_NAMES)))
-            names = set(await bridge.available_names(force=True))
-            assert "bash" in names, "after removing preseed and re-seeding, real bash should land"
-
-            try: await client.stop_channels()
-            except Exception: client.stop_channels()
-
-        loop.run_until_complete(_go())
-    finally:
-        km.shutdown_kernel(now=False)
-        try: loop.close()
-        except Exception: pass
-        assert km.is_alive() is False, "kernel should be shut down"
+async def test_spawn_bootstrap_skip_seed_shutdown(gateway):
+    ks = await KernelSession(url=gateway).start()
+    assert ks.owned
+    bridge = KernelBridge(ks.kc)
+    await bridge._exec("def bash(**kw): return 'sentinel-preseeded'")
+    present = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
+    assert 'bash' in present, "preseeded callable should count as present"
+    await bridge.seed_tools(skip=present)
+    res = await bridge.call_tool('bash', {})
+    assert 'sentinel-preseeded' in res, f"seed_tools with skip should have preserved preseeded bash; got {res!r}"
+    await bridge._exec("globals().pop('bash', None)")
+    await bridge.seed_tools(skip=set(await bridge.present_names(CUSTOM_TOOL_NAMES)))
+    names = set(await bridge.available_names(force=True))
+    assert 'bash' in names, "after removing preseed and re-seeding, real bash should land"
+    kid = ks.kid
+    await ks.close()
+    m = JupyAsyncMultiKernelManager(gateway)
+    assert not await m.is_alive(kid), "an owned kernel is shut down on close"

@@ -26,8 +26,16 @@ def test_md_blocks():
     assert bs[0].plain == '# Title'
     assert any(s.style and 'bold' in str(s.style) for s in bs[1].spans)
     assert 'a link (http://x.com)' in bs[1].plain
+    assert any(s.style and 'link http://x.com' in str(s.style) for s in bs[1].spans)  # OSC 8: links must be real, not costume
     assert isinstance(bs[2], Syntax) and bs[2].code == 'print(1)'
     assert '• one' in bs[3].plain and '  • nested' in bs[3].plain
     assert bs[4].plain.startswith('│ quoted')
     assert 'a │ b' in bs[5].plain and '1 │ 2' in bs[5].plain
     assert all(hasattr(b, '__rich_console__') or isinstance(b, Text) for b in bs)
+
+def test_list_inline():
+    bs = md_blocks('- [docxlite](https://pypi.org/p/docxlite) - read docx\n- has **bold** text')
+    t = bs[0]
+    assert 'docxlite (https://pypi.org/p/docxlite)' in t.plain
+    assert any(s.style and 'link https://pypi.org/p/docxlite' in str(s.style) for s in t.spans)
+    assert any(s.style and 'bold' in str(s.style) and t.plain[s.start:s.end] == 'bold' for s in t.spans)

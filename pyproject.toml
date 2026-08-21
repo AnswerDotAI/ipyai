@@ -10,8 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [{name = "Jeremy Howard", email = "info@answer.ai"}]
-dependencies = ["fastcore>=1.12.31", "ipython>=9", "jupyter_client>=8", "teleprint", "conkernelclient", "ipymini", "rich", "mistletoe", "ipythonng", "safepyrun",
-    "python-fastllm>=0.0.34", "aidialog>=0.0.5", "fastllm-claude-code>=0.0.7", "apsw", "safecmd", "pyskills", "toolslm", "pillow"]
+dependencies = ["fastcore>=1.12.31", "ipython>=9", "teleprint", "jupyasyncclient>=0.2.5", "ipymini", "rich", "safepyrun",
+    "python-fastllm>=0.0.38", "aidialog>=0.0.8", "fastllm-claude-code>=0.0.7", "safecmd", "pyskills", "pillow"]
 
 [project.scripts]
 ipyai = "ipyai.cli:main"
@@ -20,7 +20,7 @@ ipyai = "ipyai.cli:main"
 Source = "https://github.com/answerdotai/ipyai"
 
 [project.optional-dependencies]
-dev = ["build>=1.0.0", "fastship>=0.0.6", "pytest", "pytest-asyncio", "pytest-xdist", "twine>=5.0.0"]
+dev = ["build>=1.0.0", "rustygate", "fastship>=0.0.6", "pytest", "pytest-asyncio", "pytest-xdist", "twine>=5.0.0"]
 
 [tool.setuptools.dynamic]
 version = {attr = "ipyai.__version__"}
@@ -31,7 +31,8 @@ include = ["ipyai*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["slow: spawns a real shell pty and waits on timing; unreliable in sandboxed environments; deselected by default"]
 filterwarnings = ["ignore::DeprecationWarning:pty", "ignore:Pydantic serializer warnings:UserWarning"]
-addopts = "-n 4 --dist loadfile"
+addopts = "-n 4 --dist loadfile -m 'not slow'"
 
 [tool.fastship]
