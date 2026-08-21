@@ -19,7 +19,7 @@ async def test_bridge_and_writeback(gateway):
         names = await tools.names()
         assert 'py' in names
         out = await tools.call_text('py', {'code': 'zz = 6*7\nprint("side effect")\nzz'})
-        assert 'side effect' in out and '42' in out
+        assert '<stdout>\nside effect\n</stdout>' in out and '<execute_result>\n42\n</execute_result>' in out  # tagged, so the model can tell a print from a value
         assert await bridge.read_var('zz') == 42  # the tool ran in the USER'S namespace
         assert 'zz = 6*7\nprint("side effect")\nzz' not in await bridge.read_var('In')  # model cells stay out of the user's history (and that is how kernel-side rules tell them apart)
         err = await tools.call_text('py', {'code': '1/0'})

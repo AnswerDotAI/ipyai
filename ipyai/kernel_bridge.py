@@ -3,7 +3,10 @@ import json
 from aidialog.dialog import Message
 from aidialog.hist import output_parts, merge_media
 from aidialog.msg_parts import FullResponse, ToolResponse
+from fastcore.nbio import render_text
 
+
+TB_MAXLEN = 180   # most characters shown per traceback line in `py` results, clikernel's budget
 
 # `py` is the ipyaing kernel tool (the solveit name; codex reserves `python` model-side)
 CUSTOM_TOOL_NAMES = ("py", "bash", "start_bgterm", "write_stdin", "close_bgterm", "lnhashview_file", "exhash_file", "list_pyskills")
@@ -68,13 +71,13 @@ class KernelBridge:
     async def run_py(self, code):
         """The `py` tool: run the model's `code` as a plain cell, the same path as a user cell (so the kernel sees
         exactly the model's code, and nothing is captured kernel-side), and render the nbformat outputs for the
-        model the way solveit does: `ai_output` text, images as media parts gated by `aim_info`. fastllm runs a
-        turn's tool calls in parallel, so the kernel queues them; `stop_on_error=False` keeps one call's error from
-        aborting the rest. `store_history=False` keeps the model's cells out of the user's `In` history, and is
-        what kernel-side rules use to tell the model's cells from the user's."""
+        model: `render_text` (tagged when a cell has several outputs, tracebacks capped), the same text clikernel
+        shows, plus images as media parts gated by `aim_info`. fastllm runs a turn's tool calls in parallel, so the
+        kernel queues them; `stop_on_error=False` keeps one call's error from aborting the rest. `store_history=False`
+        keeps the model's cells out of the user's `In` history, and is what kernel-side rules use to tell the
+        model's cells from the user's."""
         outs = await self.client.run(code, store_history=False, stop_on_error=False)
-        m = Message(code, output=outs)
-        res = merge_media(m.ai_output, output_parts(m, self.aim_info))
+        res = merge_media(render_text(outs, tb_maxlen=TB_MAXLEN), output_parts(Message(code, output=outs), self.aim_info))
         return res if isinstance(res, str) else ToolResponse(res)
 
     async def read_var(self, name):
