@@ -21,6 +21,7 @@ async def test_bridge_and_writeback(gateway):
         out = await tools.call_text('py', {'code': 'zz = 6*7\nprint("side effect")\nzz'})
         assert 'side effect' in out and '42' in out
         assert await bridge.read_var('zz') == 42  # the tool ran in the USER'S namespace
+        assert 'zz = 6*7\nprint("side effect")\nzz' not in await bridge.read_var('In')  # model cells stay out of the user's history (and that is how kernel-side rules tell them apart)
         err = await tools.call_text('py', {'code': '1/0'})
         assert 'ZeroDivisionError' in err and 'division by zero' in err
         img = await tools.call_text('py', {'code': 'from IPython.display import Image, display\nfrom aidialog.dialog import tiny_png\ndisplay(Image(data=tiny_png))'})

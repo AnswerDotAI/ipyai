@@ -71,8 +71,9 @@ class KernelBridge:
         exactly the model's code, and nothing is captured kernel-side), and render the nbformat outputs for the
         model the way solveit does: `ai_output` text, images as media parts gated by `aim_info`. Calls serialize
         on `_run_lock`: fastllm runs a turn's tool calls in parallel, and two `Run` streams on one client would
-        take each other's reply and idle messages."""
-        async with self._run_lock: outs = await self.client.run(code)
+        take each other's reply and idle messages. `store_history=False` keeps the model's cells out of the
+        user's `In` history, and is what kernel-side rules use to tell the model's cells from the user's."""
+        async with self._run_lock: outs = await self.client.run(code, store_history=False)
         m = Message(code, output=outs)
         res = merge_media(m.ai_output, output_parts(m, self.aim_info))
         return res if isinstance(res, str) else ToolResponse(res)

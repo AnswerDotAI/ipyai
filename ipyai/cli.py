@@ -452,12 +452,19 @@ class App:
             rows = list_sessions()
             if len(rows) == 1: self.resume_session(rows[0][0])
             elif rows: self.picker = rows[:9]  # the startup picker paints as an over transient once run() starts
-        if self.assistant.session is None: self.assistant.session = Session()
+        if self.assistant.session is None:
+            self.assistant.session = Session()
+            await self._stamp_session()
         a = self.assistant
         a.dlg.meta['ipyai'] = {**a.dlg.meta.get('ipyai', {}), 'kernel_id': self.k.kid}
         if load is not None:
             self._job_note(self.load_dialog(load))   # the one ack: the comm path's ack arrives as magic output instead
             await self.run_loaded()
+
+    async def _stamp_session(self):
+        """Name the session file in the kernel's environment (`LLMDOJO_HOST_ID`), so kernel-side tooling that keys
+        state to the conversation (llmdojo's doc-state) keys it to this session, across resumes and kernel restarts."""
+        await self.assistant.bridge._exec(f"import os; os.environ['LLMDOJO_HOST_ID'] = {self.assistant.session.path.stem!r}")
 
     def _on_comm(self, mt, c):
         "%ipyai lands here (via KernelSession.on_comm): track the comm, ack each command by request id."
@@ -561,6 +568,7 @@ class App:
         a.dlg = dlg
         a.dlg.meta['ipyai'] = {**a.dlg.meta.get('ipyai', {}), 'kernel_id': self.k.kid}
         a.session = Session(path=path)
+        self.comp.spawn(self._stamp_session(), name='stamp')
 
     def load_dialog(self, path):
         """Import a Dialog .ipynb (%ipyai save's output, or any notebook) as the session model. Nothing is
