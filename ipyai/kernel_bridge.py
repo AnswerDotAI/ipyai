@@ -69,14 +69,8 @@ class KernelBridge:
         return FullResponse(text) if exprs.get(full_e) is True else text
 
     async def run_py(self, code):
-        """The `py` tool: run the model's `code` as a plain cell, the same path as a user cell (so the kernel sees
-        exactly the model's code, and nothing is captured kernel-side), and render the nbformat outputs for the
-        model: `render_text` (tagged when a cell has several outputs, tracebacks capped), the same text clikernel
-        shows, plus images as media parts gated by `aim_info`. fastllm runs a turn's tool calls in parallel, so the
-        kernel queues them; `stop_on_error=False` keeps one call's error from aborting the rest. `store_history=False`
-        keeps the model's cells out of the user's `In` history, and is what kernel-side rules use to tell the
-        model's cells from the user's."""
-        outs = await self.client.run(code, store_history=False, stop_on_error=False)
+        "The `py` tool: run `code` as a plain cell and render its outputs as clikernel does (tagged text, capped tracebacks, images gated by `aim_info`)"
+        outs = await self.client.run(code, store_history=False, stop_on_error=False)   # no history: kernel rules tell model cells from the user's; an error must not abort parallel calls queued behind it
         res = merge_media(render_text(outs, tb_maxlen=TB_MAXLEN), output_parts(Message(code, output=outs), self.aim_info))
         return res if isinstance(res, str) else ToolResponse(res)
 
