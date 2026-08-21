@@ -8,6 +8,8 @@ DEFAULT_SUGGEST_MODEL = 'codex/gpt-5.6-luna'
 DEFAULT_THINK = 'm'
 DEFAULT_CODE_THEME = 'auto'   # auto: pick ansi_dark/ansi_light from the terminal background (OSC 11)
 DEFAULT_PROMPT_MODE = False
+DEFAULT_PROMPT_STYLE = ''     # Rich style string for prompt text, e.g. 'bold'; '' leaves it plain
+DEFAULT_PAD_TRANSCRIPT = False  # blank row before each input block, spacing the transcript by turns
 CONFIG_DIR = xdg_config_home()/'ipyai'
 CONFIG_PATH = CONFIG_DIR/'config.json'
 SYSP_PATH = CONFIG_DIR/'sysp.txt'
@@ -30,7 +32,8 @@ SUGGEST_SP = 'You are a code suggestion engine for IPython. Return only the sugg
 
 def _default_config():
     return dict(model=DEFAULT_MODEL, suggest_model=DEFAULT_SUGGEST_MODEL, think=DEFAULT_THINK,
-                code_theme=DEFAULT_CODE_THEME, prompt_mode=DEFAULT_PROMPT_MODE)
+                code_theme=DEFAULT_CODE_THEME, prompt_mode=DEFAULT_PROMPT_MODE,
+                prompt_style=DEFAULT_PROMPT_STYLE, pad_transcript=DEFAULT_PAD_TRANSCRIPT)
 
 def load_config(path=None):
     "Effective config dict: file over defaults; models are flat vendor-prefixed strings like 'codex/gpt-5.4'."
@@ -45,6 +48,8 @@ def load_config(path=None):
     cfg['think'] = str(cfg['think'] or DEFAULT_THINK).strip().lower()
     cfg['code_theme'] = str(cfg['code_theme']).strip() or DEFAULT_CODE_THEME
     cfg['prompt_mode'] = bool(cfg['prompt_mode'])
+    cfg['prompt_style'] = str(cfg['prompt_style']).strip()
+    cfg['pad_transcript'] = bool(cfg['pad_transcript'])
     return cfg
 
 def load_sysp(path=None):
