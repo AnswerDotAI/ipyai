@@ -55,11 +55,12 @@ async def test_start_cwd_env(gateway, tmp_path):
 
 
 async def test_py_concurrent_calls(gateway):
-    "Parallel `py` calls from one model turn serialize on the kernel: each gets its own result instead of stealing the other's reply messages."
+    "Parallel `py` calls from one model turn each get their own result, and one call's error does not abort the ones queued behind it."
     async with KernelSession(url=gateway) as k:
         _, tools = await setup_tools(k.kc)
-        calls = (tools.call_text('py', dict(code=c)) for c in ['y = 6*7', 'y', '1+1'])
-        assert await asyncio.wait_for(asyncio.gather(*calls), 20) == ['', '42', '2']
+        calls = (tools.call_text('py', dict(code=c)) for c in ['y = 6*7', '1/0', 'y', '1+1'])
+        res = await asyncio.wait_for(asyncio.gather(*calls), 20)
+        assert 'ZeroDivisionError' in res[1] and [res[0], *res[2:]] == ['', '42', '2']
 
 
 def test_session_files(tmp_path, monkeypatch):

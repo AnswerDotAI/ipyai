@@ -1,5 +1,5 @@
 "Kernel-facing bridge: tool discovery, tool calls, and variable reads over a `JupyAsyncKernelClient` (whose eval family does the wire work)."
-import asyncio, json
+import json
 from aidialog.dialog import Message
 from aidialog.hist import output_parts, merge_media
 from aidialog.msg_parts import FullResponse, ToolResponse
@@ -22,7 +22,6 @@ class KernelBridge:
         self._schemas = None
         self._names = None
         self.aim_info = None   # model capability dict gating images in `py` results; the Assistant sets it each turn
-        self._run_lock = asyncio.Lock()   # one `py` cell at a time on this client (see `run_py`)
 
     async def _exec(self, code, *, timeout=_EXEC_TIMEOUT):
         cts = (await self.client.reply(code, silent=True, store_history=False, timeout=timeout))["content"]
@@ -69,11 +68,11 @@ class KernelBridge:
     async def run_py(self, code):
         """The `py` tool: run the model's `code` as a plain cell, the same path as a user cell (so the kernel sees
         exactly the model's code, and nothing is captured kernel-side), and render the nbformat outputs for the
-        model the way solveit does: `ai_output` text, images as media parts gated by `aim_info`. Calls serialize
-        on `_run_lock`: fastllm runs a turn's tool calls in parallel, and two `Run` streams on one client would
-        take each other's reply and idle messages. `store_history=False` keeps the model's cells out of the
-        user's `In` history, and is what kernel-side rules use to tell the model's cells from the user's."""
-        async with self._run_lock: outs = await self.client.run(code, store_history=False)
+        model the way solveit does: `ai_output` text, images as media parts gated by `aim_info`. fastllm runs a
+        turn's tool calls in parallel, so the kernel queues them; `stop_on_error=False` keeps one call's error from
+        aborting the rest. `store_history=False` keeps the model's cells out of the user's `In` history, and is
+        what kernel-side rules use to tell the model's cells from the user's."""
+        outs = await self.client.run(code, store_history=False, stop_on_error=False)
         m = Message(code, output=outs)
         res = merge_media(m.ai_output, output_parts(m, self.aim_info))
         return res if isinstance(res, str) else ToolResponse(res)
