@@ -162,6 +162,7 @@ class Assistant:
             if warn: parts.insert(0, warn)
             tools = ((await self.tools.openai_schemas()) or None) if self.tools else None
             ns = _BridgeNS(self.tools) if tools else {}
+            if self.bridge: self.bridge.aim_info = self.aim_info
             chat = self._make_chat(self.model, self.sp, tools=tools, ns=ns, hist=hist)
             stream = await chat(parts, stream=True, think=self.think or None, max_steps=21)
         except BaseException:

@@ -11,6 +11,7 @@ DEFAULT_PROMPT_MODE = False
 CONFIG_DIR = xdg_config_home()/'ipyai'
 CONFIG_PATH = CONFIG_DIR/'config.json'
 SYSP_PATH = CONFIG_DIR/'sysp.txt'
+STARTUP_PATH = CONFIG_DIR/'startup.py'   # run in every owned kernel at seeding, `__file__` bound, like clikernel's startup.py
 
 DEFAULT_SP = """You are an AI assistant running inside terminal IPython through ipyai.
 
