@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.4
+
+### New Features
+
+- Tag kernel executions with cell ids for concurrent runs, record cells before execution, and template model/date into the system prompt ([#33](https://github.com/AnswerDotAI/ipyai/issues/33))
+
+
 ## 0.1.3
 
 ### New Features
