@@ -9,7 +9,7 @@ from aidialog.dialog import Dialog, INTERRUPTED
 from aidialog.msg_parts import Part, Text
 from aidialog.hist import dlg2hist, get_exprs, is_nameerr, vars_hist, warning_tag
 from fastcore.xml import to_xml
-from .config import load_config, load_sysp, SUGGEST_SP
+from .config import load_config, load_sysp, SUGGEST_SP, render_sp
 
 LAST_PROMPT = '_ai_last_prompt'
 LAST_RESPONSE = '_ai_last_response'
@@ -115,14 +115,19 @@ class Assistant:
         return AsyncChat(model=model, sp=sp, tools=tools or None, hist=hist or None,
                          ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
-    def add_cell(self, source, outputs):
-        "Record one executed cell: nbformat-shaped outputs become a code/note message, returned (None when nothing records)."
+    def add_cell(self, source):
+        "Record a cell about to run as a code/note message, returned so its id can tag the execute (None when nothing records)."
         if source.lstrip().startswith('%ipyai'): return  # housekeeping commands are not part of the conversation
         if _is_note(source): m = self.dlg.mk_message(_note_str(source), msg_type='note')
-        else: m = self.dlg.mk_message(source, msg_type='code', output=list(outputs))
+        else: m = self.dlg.mk_message(source, msg_type='code', output=[])
         self.n_cells += 1
-        self.save()
         return m
+
+    def finish_cell(self, m, outputs):
+        "Complete `add_cell`'s message once the run ends: outputs land on code messages, and the dialog saves."
+        if m is None: return
+        if m.msg_type == 'code': m.output = list(outputs or [])
+        self.save()
 
     async def _vars_turn(self):
         """The synthetic variables turn plus any missing-var warning: `$` and `!` refs both resolved
@@ -152,6 +157,7 @@ class Assistant:
         The stored form is `chat.full()`; an interrupt freezes the accumulated partial instead.
         The consumer runs as its own task so cancelling it leaves cleanup awaits running."""
         from fastllm.chat import StreamAccum
+        from fastllm.acomplete import split_vendor
         prompt = (prompt or '').strip()
         if not prompt: return None
         pmsg = self.dlg.mk_message(prompt, msg_type='prompt')
@@ -163,7 +169,7 @@ class Assistant:
             tools = ((await self.tools.openai_schemas()) or None) if self.tools else None
             ns = _BridgeNS(self.tools) if tools else {}
             if self.bridge: self.bridge.aim_info = self.aim_info
-            chat = self._make_chat(self.model, self.sp, tools=tools, ns=ns, hist=hist)
+            chat = self._make_chat(self.model, render_sp(self.sp, split_vendor(self.model)[1]), tools=tools, ns=ns, hist=hist)
             stream = await chat(parts, stream=True, think=self.think or None, max_steps=21)
         except BaseException:
             self.dlg.remove_msgs([pmsg])   # the turn never started: a retry must not double the prompt

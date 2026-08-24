@@ -1,5 +1,6 @@
 "Kernel-facing bridge: tool discovery, tool calls, and variable reads over a `JupyAsyncKernelClient` (whose eval family does the wire work)."
 import json
+from fastcore.utils import rtoken_hex
 from aidialog.dialog import Message
 from aidialog.hist import output_parts, merge_media
 from aidialog.msg_parts import FullResponse, ToolResponse
@@ -20,8 +21,8 @@ _TOOL_TIMEOUT = 600
 
 class KernelBridge:
     "Gives ToolRegistry a namespace-shaped interface over the kernel: silent executes for reads and tool calls (nothing in history), except `py`, which runs as a plain cell."
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, client, session=None):
+        self.client, self.session = client, session
         self._schemas = None
         self._names = None
         self.aim_info = None   # model capability dict gating images in `py` results; the Assistant sets it each turn
@@ -69,9 +70,8 @@ class KernelBridge:
         return FullResponse(text) if exprs.get(full_e) is True else text
 
     async def run_py(self, code):
-        "The `py` tool: run `code` as a plain cell and render its outputs as clikernel does (tagged text, capped tracebacks, images gated by `aim_info`)"
-        # no on_comm: model cells may not drive host magics, so their comm traffic is dropped at the run
-        outs = await self.client.run(code, store_history=False, stop_on_error=False)   # no history: kernel rules tell model cells from the user's; an error must not abort parallel calls queued behind it
+        "The `py` tool: run `code` as a cell tagged `py{token}` through the session pump, rendered as clikernel does (tagged text, capped tracebacks, images gated by `aim_info`)"
+        outs = await self.session.run_cell(f'py{rtoken_hex(4)}', code, allow_stdin=False, store_history=False, stop_on_error=False)   # no history: kernel rules tell model cells from the user's; an error must not abort parallel calls queued behind it
         res = merge_media(render_text(outs, tb_maxlen=TB_MAXLEN), output_parts(Message(code, output=outs), self.aim_info))
         return res if isinstance(res, str) else ToolResponse(res)
 

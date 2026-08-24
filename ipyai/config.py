@@ -1,5 +1,6 @@
 "Config for the ipyaing app: same files as classic ipyai (XDG config.json + sysp.txt), IPython-free."
 import json, os
+from datetime import datetime
 from pathlib import Path
 from fastcore.xdg import xdg_config_home
 
@@ -13,7 +14,7 @@ CONFIG_PATH = CONFIG_DIR/'config.json'
 SYSP_PATH = CONFIG_DIR/'sysp.txt'
 STARTUP_PATH = CONFIG_DIR/'startup.py'   # run in every owned kernel at seeding, `__file__` bound, like clikernel's startup.py
 
-DEFAULT_SP = """You are an AI assistant running inside terminal IPython through ipyai.
+DEFAULT_SP = """You are {model}, an AI assistant running inside terminal IPython through ipyai. Today's date is {today}.
 
 The user's message may include, before the request itself:
 - `<code>` blocks: recently executed Python cells, with their outputs
@@ -53,3 +54,9 @@ def load_sysp(path=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists(): path.write_text(DEFAULT_SP)
     return path.read_text()
+
+def render_sp(sp, model):
+    "Fill `{model}` and `{today}` in `sp`; a missing placeholder's line is appended, so every sp states both."
+    if '{model}' not in sp: sp += '\n\nYou are {model}.'
+    if '{today}' not in sp: sp += "\nToday's date is {today}."
+    return sp.replace('{model}', model).replace('{today}', datetime.now().strftime('%B %d, %Y'))

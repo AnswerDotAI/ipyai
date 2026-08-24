@@ -122,7 +122,7 @@ async def test_prompt_flow_and_ctx():
     "The routed prompt flow: ask block, reply blocks, dialog records the turn, ctx rides via dlg2hist."
     tty, app, stub = mk_app(events=[text_part('The answer.\n')])
     app.paint()
-    app.assistant.add_cell('x = 41 + 1', [dict(output_type='stream', name='stdout', text='')])
+    app.assistant.finish_cell(app.assistant.add_cell('x = 41 + 1'), [dict(output_type='stream', name='stdout', text='')])
     app.comp.on_bytes(b'.what is x?\r')
     for _ in range(100):
         await asyncio.sleep(0.02)

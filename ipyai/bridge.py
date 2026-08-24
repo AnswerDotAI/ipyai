@@ -18,10 +18,11 @@ def _startup_src(path):
 try: exec(compile({path.read_text()!r}, __file__, 'exec'))
 finally: del __file__'''
 
-async def setup_tools(client):
-    """Seed a live kernel and return (bridge, registry): ipykernel_helper services, the `py` tool, the user's
-    `config.STARTUP_PATH` (if present; a failure there names the file and stops the launch), then the custom tool imports."""
-    bridge = KernelBridge(client)
+async def setup_tools(k):
+    """Seed a `KernelSession`'s live kernel and return (bridge, registry): ipykernel_helper services, the `py`
+    tool, the user's `config.STARTUP_PATH` (if present; a failure there names the file and stops the launch),
+    then the custom tool imports."""
+    bridge = KernelBridge(k.kc, session=k)
     for src in (SEED_SRC, PYTHON_TOOL_SRC):
         try: await bridge._exec(src)
         except Exception: pass

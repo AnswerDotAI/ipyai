@@ -1,10 +1,13 @@
 "Kernel lifecycle over a rustygate gateway: jupyasyncclient + ipymini, iopub rendered as it arrives."
-import os
-from fastcore.utils import first
+import asyncio, logging, os
+from fastcore.utils import first, rtoken_hex
+from fastcore.nbio import msg2out
 from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
 from jupyasyncclient import JupyAsyncKernelClient
+from jupywire.route import OUTPUT_MSGS, COMM_MSGS
 
 DEFAULT_URL = 'http://127.0.0.1:8787'   # rustygate's default port; IPYAI_GATEWAY overrides
+log = logging.getLogger(__name__)
 
 
 class KernelSession:
@@ -16,6 +19,8 @@ class KernelSession:
         self.mgr, self.kc, self.kid, self.owned, self.busy = None, None, None, False, False
         self.on_comm = None   # host-side comm handler: (msg_type, content) for comm traffic seen on iopub
         self.on_stdin = None  # async (prompt, password) -> str, answering kernel input_requests
+        self.on_cell_msg = None  # (cell_id, jmsg) observer for merged-stream traffic tagged `{cell_id}.{token}`
+
 
     async def start(self, kernel='', cwd=None, env=None):
         """Create an owned kernel (closed on exit), or attach to `kernel` by id prefix (taken as
@@ -34,16 +39,47 @@ class KernelSession:
             try: await self.kc.reply("get_ipython().extension_manager.load_extension('ipykernel_helper.core')",
                                      silent=True, store_history=False, timeout=10)
             except Exception: pass
+        self.kc.on_jmsg = self._on_jmsg
         return self
 
-    async def run(self, code, on_output):
-        """Execute `code`, calling `on_output(out)` per nbformat-shaped output as it arrives: a thin
-        adapter over `kc.run`, which owns parent-id filtering, reply+idle completion, stdin via
-        `on_stdin` (absent means `allow_stdin=False`), comm passthrough via `on_comm`, and
-        dead-kernel detection (`DeadKernelError` on silence from a dead kernel)."""
+    def _on_jmsg(self, jmsg):
+        """Everything `route` left unmatched (solveit's convention): an `input_request` is answered through
+        `on_stdin`, a message whose parent msg_id is `{cell_id}.{token}` is offered to the `on_cell_msg`
+        observer (post-idle traffic, e.g. a background thread's print), and the rest is bridge plumbing, dropped."""
+        if jmsg['msg_type'] == 'input_request':
+            if self.on_stdin is not None: asyncio.create_task(self._answer_stdin(jmsg['content']))
+            return
+        pid = jmsg.get('parent_header', {}).get('msg_id') or ''
+        if '.' not in pid: return
+        cid = pid.split('.', 1)[0]
+        if self.on_cell_msg is not None:
+            try: self.on_cell_msg(cid, jmsg)
+            except Exception: log.exception('on_cell_msg failed')
+
+    async def _answer_stdin(self, c): self.kc.input(await self.on_stdin(c.get('prompt', ''), c.get('password', False)))
+
+    async def run_cell(self, cid, code, on_output=None, allow_stdin=None, **kw):
+        """Execute `code` tagged as cell `cid` (msg_id `{cid}.{token}`): its messages stream through
+        `run`'s callback as they arrive, and the call returns the nbformat outputs after reply and idle.
+        Several cells can be in flight at once; each collects only its own traffic."""
+        if allow_stdin is None: allow_stdin = self.on_stdin is not None
+        outs = []
+        def _msg(m):
+            if self.on_cell_msg is not None:
+                try: self.on_cell_msg(cid, m)
+                except Exception: log.exception('on_cell_msg failed')
+            typ = m['msg_type']
+            if typ in OUTPUT_MSGS:
+                out = msg2out(m)
+                outs.append(out)
+                if on_output is not None:
+                    try: on_output(out)
+                    except Exception: log.exception('on_output failed')
+            elif typ in COMM_MSGS and self.on_comm is not None: self.on_comm(typ, m['content'])
         self.busy = True
         try:
-            async for o in self.kc.run(code, on_stdin=self.on_stdin, on_comm=self.on_comm): on_output(o)
+            await self.kc.run(code, msg_id=f'{cid}.{rtoken_hex(4)}', on_output=_msg, allow_stdin=allow_stdin, **kw)
+            return outs
         finally: self.busy = False
 
     async def interrupt(self): await self.mgr.interrupt_kernel(self.kid)

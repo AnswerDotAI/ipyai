@@ -33,9 +33,9 @@ def temp_config_paths(tmp_path, monkeypatch):
     yield
 
 
-async def _prepare_kernel_bridge(client):
+async def _prepare_kernel_bridge(ks):
     "Seed the test kernel exactly as the app does (`setup_tools`): ipykernel_helper, the `py` tool, the custom tool imports."
-    bridge, _ = await setup_tools(client)
+    bridge, _ = await setup_tools(ks)
     return bridge
 
 
@@ -71,7 +71,7 @@ async def session_kernel(gateway):
     "One kernel + bridge for the whole session, on pytest-asyncio's session loop."
     from ipyai.kernel import KernelSession
     ks = await KernelSession(url=gateway).start()
-    bridge = await _prepare_kernel_bridge(ks.kc)
+    bridge = await _prepare_kernel_bridge(ks)
     baseline = await _snapshot_globals(bridge)
     yield dict(ks=ks, client=ks.kc, bridge=bridge, baseline=baseline)
     await ks.close()

@@ -15,7 +15,7 @@ from ipyai.kernel_bridge import KernelBridge
 async def test_bridge_and_writeback(gateway):
     "The py tool runs the model's code as a plain cell, so its outputs come back as the user would see them: text, tracebacks, and images; set_vars lands LAST_RESPONSE for the user."
     async with KernelSession(url=gateway) as k:
-        bridge, tools = await setup_tools(k.kc)
+        bridge, tools = await setup_tools(k)
         names = await tools.names()
         assert 'py' in names
         out = await tools.call_text('py', {'code': 'zz = 6*7\nprint("side effect")\nzz'})
@@ -30,7 +30,7 @@ async def test_bridge_and_writeback(gateway):
         assert await bridge.read_var(LAST_RESPONSE) == 'the reply text'
         # a normal cell still renders normally after bridge traffic (no iopub leakage)
         outs = []
-        await k.run('print("clean")', outs.append)
+        await k.run_cell('cellZ', 'print("clean")', outs.append)
         assert any('clean' in o.get('text', '') for o in outs if o['output_type'] == 'stream')
 
 
@@ -38,7 +38,7 @@ async def test_startup_file(gateway):
     "An owned kernel runs `config.STARTUP_PATH` at seeding with `__file__` bound, the way clikernel runs its startup.py."
     config.STARTUP_PATH.write_text('startup_ran = 7\nstartup_file = __file__\n')
     async with KernelSession(url=gateway) as k:
-        bridge, _ = await setup_tools(k.kc)
+        bridge, _ = await setup_tools(k)
         assert await bridge.read_var('startup_ran') == 7
         assert await bridge.read_var('startup_file') == str(config.STARTUP_PATH)
 
@@ -57,7 +57,7 @@ async def test_start_cwd_env(gateway, tmp_path):
 async def test_py_concurrent_calls(gateway):
     "Parallel `py` calls from one model turn each get their own result, and one call's error does not abort the ones queued behind it."
     async with KernelSession(url=gateway) as k:
-        _, tools = await setup_tools(k.kc)
+        _, tools = await setup_tools(k)
         calls = (tools.call_text('py', dict(code=c)) for c in ['y = 6*7', '1/0', 'y', '1+1'])
         res = await asyncio.wait_for(asyncio.gather(*calls), 20)
         assert 'ZeroDivisionError' in res[1] and [res[0], *res[2:]] == ['', '42', '2']
