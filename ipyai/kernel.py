@@ -1,5 +1,5 @@
 "Kernel lifecycle over a rustygate gateway: jupyasyncclient + ipymini, iopub rendered as it arrives."
-import asyncio, logging, os
+import logging, os
 from fastcore.utils import first, rtoken_hex
 from fastcore.nbio import msg2out
 from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
@@ -43,12 +43,9 @@ class KernelSession:
         return self
 
     def _on_jmsg(self, jmsg):
-        """Everything `route` left unmatched (solveit's convention): an `input_request` is answered through
-        `on_stdin`, a message whose parent msg_id is `{cell_id}.{token}` is offered to the `on_cell_msg`
-        observer (post-idle traffic, e.g. a background thread's print), and the rest is bridge plumbing, dropped."""
-        if jmsg['msg_type'] == 'input_request':
-            if self.on_stdin is not None: asyncio.create_task(self._answer_stdin(jmsg['content']))
-            return
+        """A message left unmatched by `route` whose parent msg_id is `{cell_id}.{token}` is offered to the
+        `on_cell_msg` observer (post-idle traffic, e.g. a background thread's print); the rest is bridge
+        plumbing, dropped. stdin never lands here: each run owns its requests via `run`'s `on_stdin` hook."""
         pid = jmsg.get('parent_header', {}).get('msg_id') or ''
         if '.' not in pid: return
         cid = pid.split('.', 1)[0]
@@ -56,13 +53,17 @@ class KernelSession:
             try: self.on_cell_msg(cid, jmsg)
             except Exception: log.exception('on_cell_msg failed')
 
-    async def _answer_stdin(self, c): self.kc.input(await self.on_stdin(c.get('prompt', ''), c.get('password', False)))
+    def _answer_stdin(self, m):
+        "run()'s `on_stdin` hook: adapt the wire `input_request` to the app's `(prompt, password)` handler."
+        c = m['content']
+        return self.on_stdin(c.get('prompt', ''), c.get('password', False))
 
     async def run_cell(self, cid, code, on_output=None, allow_stdin=None, **kw):
         """Execute `code` tagged as cell `cid` (msg_id `{cid}.{token}`): its messages stream through
         `run`'s callback as they arrive, and the call returns the nbformat outputs after reply and idle.
         Several cells can be in flight at once; each collects only its own traffic."""
         if allow_stdin is None: allow_stdin = self.on_stdin is not None
+        stdin = self._answer_stdin if allow_stdin and self.on_stdin is not None else None
         outs = []
         def _msg(m):
             if self.on_cell_msg is not None:
@@ -78,7 +79,7 @@ class KernelSession:
             elif typ in COMM_MSGS and self.on_comm is not None: self.on_comm(typ, m['content'])
         self.busy = True
         try:
-            await self.kc.run(code, msg_id=f'{cid}.{rtoken_hex(4)}', on_output=_msg, allow_stdin=allow_stdin, **kw)
+            await self.kc.run(code, msg_id=f'{cid}.{rtoken_hex(4)}', on_output=_msg, on_stdin=stdin, **kw)
             return outs
         finally: self.busy = False
 

@@ -35,6 +35,11 @@ async def test_spawn_seed_pump_shutdown(gateway):
     assert 'mine' in str(outs) and outs == ret
     assert {cid for cid, mt in got} == {'cellA', 'cellB'}, f'unexpected cell ids: {got}'
 
+    async def answer(prompt, password): return 'blue'   # the app's handler shape (cli._on_stdin)
+    ks.on_stdin = answer
+    outs = await ks.run_cell('cellC', "print('got', input('fav? '))")
+    assert 'got blue' in str(outs), f'stdin round trip failed: {outs}'
+
     kid = ks.kid
     await ks.close()
     m = JupyAsyncMultiKernelManager(gateway)
