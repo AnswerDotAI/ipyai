@@ -1,6 +1,6 @@
 "Flat config: vendor-prefixed model strings, file over defaults."
 import json
-from ipyai.config import load_config, DEFAULT_MODEL, DEFAULT_SUGGEST_MODEL
+from ipyai.config import load_config, DEFAULT_MODEL, DEFAULT_SUGGEST_MODEL, render_sp
 
 def test_defaults(tmp_path):
     p = tmp_path/'config.json'
@@ -20,3 +20,9 @@ def test_file_overrides(tmp_path):
     assert 'backend' not in cfg                    # pre-flat nested keys are ignored
     assert cfg['prompt_style'] == 'bold magenta'
     assert cfg['pad_transcript'] is True
+
+def test_render_sp():
+    s = render_sp('I am {model}; today is {today}.', 'gpt-x')
+    assert 'gpt-x' in s and '{' not in s                        # placeholders filled
+    s2 = render_sp('no placeholders here', 'gpt-x')
+    assert 'You are gpt-x.' in s2 and "Today's date is" in s2   # legacy sp: the lines are appended instead

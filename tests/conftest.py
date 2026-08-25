@@ -3,7 +3,7 @@ import os, tempfile
 import pytest, pytest_asyncio
 
 import ipyai.config as config
-from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
+from ipyai.bridge import setup_tools
 
 
 _IPYTHONDIR_SESSION = None
@@ -29,23 +29,13 @@ def temp_config_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_DIR", cfg)
     monkeypatch.setattr(config, "CONFIG_PATH", cfg/"config.json")
     monkeypatch.setattr(config, "SYSP_PATH", cfg/"sysp.txt")
+    monkeypatch.setattr(config, "STARTUP_PATH", cfg/"startup.py")
     yield
 
 
-_KERNEL_BOOTSTRAP = ("from IPython import get_ipython\n"
-    "_ip = get_ipython()\n"
-    "try: _ip.extension_manager.load_extension('ipykernel_helper.core')\n"
-    "except Exception: pass\n"
-    "try: _ip.extension_manager.load_extension('safepyrun')\n"
-    "except Exception: pass\n")
-
-
-async def _prepare_kernel_bridge(client):
-    bridge = KernelBridge(client)
-    await bridge._exec(_KERNEL_BOOTSTRAP)
-    present = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-    await bridge.seed_tools(skip=present)
-    await bridge.available_names(force=True)
+async def _prepare_kernel_bridge(ks):
+    "Seed the test kernel exactly as the app does (`setup_tools`): ipykernel_helper, the `py` tool, the custom tool imports."
+    bridge, _ = await setup_tools(ks)
     return bridge
 
 
@@ -81,7 +71,7 @@ async def session_kernel(gateway):
     "One kernel + bridge for the whole session, on pytest-asyncio's session loop."
     from ipyai.kernel import KernelSession
     ks = await KernelSession(url=gateway).start()
-    bridge = await _prepare_kernel_bridge(ks.kc)
+    bridge = await _prepare_kernel_bridge(ks)
     baseline = await _snapshot_globals(bridge)
     yield dict(ks=ks, client=ks.kc, bridge=bridge, baseline=baseline)
     await ks.close()

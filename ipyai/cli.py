@@ -17,6 +17,7 @@ import aidialog.ipynb  # noqa: F401 -- activates the Message.cell_meta/to_cell p
 from aidialog.msg_parts import Text as TextPart, ToolUse, ToolResult
 from fastcore.ansi import strip_ansi
 from fastcore.basics import str_enum
+from fastcore.utils import rtoken_hex
 from fastcore.script import call_parse
 from .kernel import KernelSession
 from .history import History
@@ -304,9 +305,10 @@ class App:
         self.cell_imgs = set()
         self.cell_outputs = []
         self.paint()
-        try: await self.k.run(code, self.on_out)
+        m = self.assistant.add_cell(code) if self.assistant is not None else None   # the cell exists before it runs: its id tags the execute
+        try: await self.k.run_cell(m.id if m is not None else f'cell{rtoken_hex(4)}', code, self.on_out)
         finally:
-            if self.assistant is not None: self.assistant.add_cell(code, self.cell_outputs)
+            if self.assistant is not None: self.assistant.finish_cell(m, self.cell_outputs)
             self.cell_outputs = None
             self.paint()
 
@@ -360,7 +362,8 @@ class App:
             blk = self.comp.print_block(Text(left, style='dim'), gutter=_gutter('out'), tag='out',
                                         collapse_at=self.collapse_at, source=left)
             if self.assistant is not None:
-                m = self.assistant.add_cell('!# background output', [dict(output_type='stream', name='stdout', text=left + '\n')])
+                m = self.assistant.add_cell('!# background output')
+                self.assistant.finish_cell(m, [dict(output_type='stream', name='stdout', text=left + '\n')])
                 if m is not None: blk.msg_id = m.id  # stamped here so the enclosing exchange's stamp skips it
 
     async def run_job(self, cmd, record=True):
@@ -424,7 +427,7 @@ class App:
         if self.assistant is not None:
             outs = [dict(output_type='stream', name='stdout', text=resid + '\n')] if resid else []
             if ec: outs.append(dict(output_type='stream', name='stderr', text=f'[exit {ec}]\n'))
-            self.assistant.add_cell(f'!{cmd}', outs)
+            self.assistant.finish_cell(self.assistant.add_cell(f'!{cmd}'), outs)
 
     async def _sync_kernel_cwd(self, pwd):
         "cwd flows shell -> kernel after each shell command, so the two worlds agree about where you are."
@@ -439,13 +442,13 @@ class App:
         (non-owned) kernel is taken as found: bridge and registry, but no seeding."""
         from .bridge import setup_tools
         if self.k.owned:
-            bridge, tools = await setup_tools(self.k.kc)
+            bridge, tools = await setup_tools(self.k)
             try: await bridge._exec("get_ipython().extension_manager.load_extension('ipyai.magic')")
             except Exception: pass  # kernel without ipyai installed: %ipyai just won't exist there
         else:
             from .kernel_bridge import KernelBridge
             from .tooling import ToolRegistry
-            bridge = KernelBridge(self.k.kc)
+            bridge = KernelBridge(self.k.kc, session=self.k)
             tools = ToolRegistry(bridge)
         if self.assistant is None: self.assistant = Assistant(cfg=self.cfg or None)
         self.assistant.tools, self.assistant.bridge = tools, bridge
@@ -454,12 +457,19 @@ class App:
             rows = list_sessions()
             if len(rows) == 1: self.resume_session(rows[0][0])
             elif rows: self.picker = rows[:9]  # the startup picker paints as an over transient once run() starts
-        if self.assistant.session is None: self.assistant.session = Session()
+        if self.assistant.session is None:
+            self.assistant.session = Session()
+            await self._stamp_session()
         a = self.assistant
         a.dlg.meta['ipyai'] = {**a.dlg.meta.get('ipyai', {}), 'kernel_id': self.k.kid}
         if load is not None:
             self._job_note(self.load_dialog(load))   # the one ack: the comm path's ack arrives as magic output instead
             await self.run_loaded()
+
+    async def _stamp_session(self):
+        """Name the session file in the kernel's environment (`LLMDOJO_HOST_ID`), so kernel-side tooling that keys
+        state to the conversation (llmdojo's doc-state) keys it to this session, across resumes and kernel restarts."""
+        await self.assistant.bridge._exec(f"import os; os.environ['LLMDOJO_HOST_ID'] = {self.assistant.session.path.stem!r}")
 
     def _on_comm(self, mt, c):
         "%ipyai lands here (via KernelSession.on_comm): track the comm, ack each command by request id."
@@ -563,6 +573,7 @@ class App:
         a.dlg = dlg
         a.dlg.meta['ipyai'] = {**a.dlg.meta.get('ipyai', {}), 'kernel_id': self.k.kid}
         a.session = Session(path=path)
+        self.comp.spawn(self._stamp_session(), name='stamp')
 
     def load_dialog(self, path):
         """Import a Dialog .ipynb (%ipyai save's output, or any notebook) as the session model. Nothing is
@@ -579,7 +590,7 @@ class App:
         dlg.name = os.path.basename(a.cwd)
         a.dlg = dlg
         a.n_cells = sum(1 for m in dlg.messages if m.msg_type in ('code', 'note'))
-        self._load_codes = [m.content for m in dlg.messages if m.msg_type == 'code']
+        self._load_codes = [(m.id, m.content) for m in dlg.messages if m.msg_type == 'code']
         return f'loaded {len(dlg)} messages from {path}; running {len(self._load_codes)} code cells'
 
     async def run_loaded(self):
@@ -588,7 +599,7 @@ class App:
         execution must wait for idle or it would deadlock."""
         codes, self._load_codes = self._load_codes, []
         while self.k.busy: await asyncio.sleep(0.05)
-        for code in codes: await self.k.run(code, self._silent_out)
+        for mid, code in codes: await self.k.run_cell(mid, code, self._silent_out)
         self.paint()
 
     def _silent_out(self, c):
@@ -966,9 +977,9 @@ class App:
 
     def on_sigint(self):
         "The ctrl-C policy, reached as a key: in-band at rest, synthesized by the compositor's SIGINT handler otherwise."
-        if self.assistant is not None and self.assistant.cancel_turn(): return  # ctrl-C stops the AI turn first
-        if self.k.busy: self.comp.spawn(self.k.interrupt(), name='interrupt')
-        else:
+        cancelled = self.assistant is not None and self.assistant.cancel_turn()
+        if self.k.busy: self.comp.spawn(self.k.interrupt(), name='interrupt')  # a tool's kernel code must not outlive a cancelled turn
+        elif not cancelled:
             self.buf.clear()
             self.ai_sugg = None
             self.paint()

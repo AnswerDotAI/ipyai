@@ -57,6 +57,9 @@ async def ipyai(line=''):
     try: d = await asyncio.wait_for(fut, _TIMEOUT)
     except asyncio.TimeoutError:
         _state['pending'].pop(req, None)
+        c, _state['comm'] = _state['comm'], None  # the host may never have seen this comm's open (e.g. a model cell created it): re-open fresh next time
+        try: c.close()
+        except Exception: pass
         raise RuntimeError(f'no ipyai host attached (no reply after {_TIMEOUT}s)') from None
     if d.get('error'): raise UsageError(d['error'])
     return PrettyString(d.get('text', ''))

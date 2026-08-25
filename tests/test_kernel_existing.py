@@ -14,7 +14,7 @@ async def test_attach_existing_kernel_without_shutdown(gateway):
     assert await sb.read_var('hidden') == 'walnut'   # live state is the point of attaching
     assert await sb.read_var('q') == 7
     outs = []
-    await att.run("print('post-attach')", outs.append)
+    await att.run_cell('cellY', "print('post-attach')", outs.append)
     assert any('post-attach' in o.get('text', '') for o in outs if o['output_type'] == 'stream')
     await att.close()   # attached: the kernel must survive our close
     assert await owner.mgr.is_alive(owner.kid), "kernel must still be alive after attached-client close"

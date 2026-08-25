@@ -89,7 +89,7 @@ def node2rich(el, theme='ansi_dark'):
 def md_blocks(md, theme='ansi_dark', **kw):
     "One Rich renderable per top-level Markdown block, code highlighted with `theme`."
     out = []
-    for c in mdhtml.to_dom(md, **kw).children:
+    for c in mdhtml.md2dom(md, **kw).children:
         if getattr(c, 'name', None) == '#text':
             if c.text.strip(): out.append(Text(c.text.strip()))
         else: out.append(node2rich(c, theme))

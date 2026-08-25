@@ -1,5 +1,6 @@
 "The %ipyai magic end-to-end: kernel-side async magic -> comm -> host app dispatch -> ack as cell output."
 import asyncio
+from fastcore.utils import rtoken_hex
 from teleprint.testing import EmuTty
 from ipyai.cli import App
 from ipyai.assistant import Assistant
@@ -24,7 +25,7 @@ async def test_ipyai_magic_e2e():
     tty, app = _mk_app()
     async with app.k:
         app.paint()
-        await app.k.run('%load_ext ipyai.magic', lambda *a: None)  # what attach_assistant execs
+        await app.k.run_cell(f'cell{rtoken_hex(4)}', '%load_ext ipyai.magic')  # what attach_assistant execs
         app.comp.on_bytes(b'%ipyai\r')
         await _settle(app, lambda: 'suggest_model = cm' in tty.term.contents())
         assert 'think = l' in tty.term.contents()
@@ -50,7 +51,7 @@ async def test_ipyai_magic_assignment():
     tty, app = _mk_app()
     async with app.k:
         app.paint()
-        await app.k.run('%load_ext ipyai.magic', lambda *a: None)
+        await app.k.run_cell(f'cell{rtoken_hex(4)}', '%load_ext ipyai.magic')
         app.comp.on_bytes(b'x = %ipyai think s\r')
         await _settle(app, lambda: not app.k.busy and app.assistant.think == 's')
         assert await app.k.kc.eval('str(x)', _call=False) == 'think = s'
@@ -60,8 +61,8 @@ async def test_ipyai_magic_no_host():
     tty, app = _mk_app()
     async with app.k:
         app.paint()
-        await app.k.run('%load_ext ipyai.magic', lambda *a: None)
-        await app.k.run('import ipyai.magic as _m; _m._TIMEOUT = 0.5', lambda *a: None)
+        await app.k.run_cell(f'cell{rtoken_hex(4)}', '%load_ext ipyai.magic')
+        await app.k.run_cell(f'cell{rtoken_hex(4)}', 'import ipyai.magic as _m; _m._TIMEOUT = 0.5')
         app.k.on_comm = None  # nobody home
         app.comp.on_bytes(b'%ipyai model haiku\r')
         await _settle(app, lambda: 'no ipyai host attached' in tty.term.contents())

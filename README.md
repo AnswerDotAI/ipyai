@@ -95,6 +95,8 @@ Config lives under `XDG_CONFIG_HOME/ipyai/`: `config.json` and `sysp.txt` (the s
 
 Every key is also a CLI flag for one launch: `ipyai --model anthropic/claude-sonnet-4-6 --think h`. Run `ipyai --help` for the full list; `--think` accepts `l`/`m`/`h`/`x`.
 
+An optional `startup.py` in the same directory runs inside every kernel ipyai owns, at seeding, with `__file__` bound (the same contract as clikernel's `~/.config/clikernel/startup.py`): put the imports and aliases you want every session to start with there. A failure in it names the file and stops the launch. Attached kernels (`-k`) are taken as found and do not run it.
+
 ## Development
 
 See [DEV.md](DEV.md).

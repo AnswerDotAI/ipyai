@@ -1,10 +1,11 @@
-"Gateway kernel lifecycle: spawn an owned kernel, seed with skip semantics, shut down on close."
+"Gateway kernel lifecycle: spawn an owned kernel, seed with skip semantics, pump cell-tagged traffic, shut down on close."
+import asyncio
 from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
 from ipyai.kernel import KernelSession
 from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
 
 
-async def test_spawn_bootstrap_skip_seed_shutdown(gateway):
+async def test_spawn_seed_pump_shutdown(gateway):
     ks = await KernelSession(url=gateway).start()
     assert ks.owned
     bridge = KernelBridge(ks.kc)
@@ -18,6 +19,27 @@ async def test_spawn_bootstrap_skip_seed_shutdown(gateway):
     await bridge.seed_tools(skip=set(await bridge.present_names(CUSTOM_TOOL_NAMES)))
     names = set(await bridge.available_names(force=True))
     assert 'bash' in names, "after removing preseed and re-seeding, real bash should land"
+
+    # the session pump: `{cell_id}.{token}` traffic reaches on_cell_msg; the bridge plumbing above never does
+    got = []
+    ks.on_cell_msg = lambda cid, m: got.append((cid, m['msg_type']))
+    ks.kc.execute("print('tagged'); 6*7", msg_id='cellA.abc123')
+    for _ in range(100):
+        if any(mt == 'execute_result' for _, mt in got): break
+        await asyncio.sleep(0.05)
+    types = [mt for cid, mt in got if cid == 'cellA']
+    assert {'stream', 'execute_input', 'execute_result'} <= set(types), f'cell traffic not routed: {got}'
+    assert all(cid == 'cellA' for cid, mt in got), f'untagged traffic leaked: {got}'
+    outs = []
+    ret = await ks.run_cell('cellB', "'mine'", outs.append)   # a live tagged cell: streamed and returned
+    assert 'mine' in str(outs) and outs == ret
+    assert {cid for cid, mt in got} == {'cellA', 'cellB'}, f'unexpected cell ids: {got}'
+
+    async def answer(prompt, password): return 'blue'   # the app's handler shape (cli._on_stdin)
+    ks.on_stdin = answer
+    outs = await ks.run_cell('cellC', "print('got', input('fav? '))")
+    assert 'got blue' in str(outs), f'stdin round trip failed: {outs}'
+
     kid = ks.kid
     await ks.close()
     m = JupyAsyncMultiKernelManager(gateway)

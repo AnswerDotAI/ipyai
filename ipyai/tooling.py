@@ -1,10 +1,11 @@
 "Shared tool registry + local namespace bridge. Kernel-backed bridge lives in kernel_bridge.py."
 import inspect, json
 
+from aidialog.msg_parts import ToolResponse
 from .kernel_bridge import CUSTOM_TOOL_NAMES
 
 
-def _result_text(res): return res if isinstance(res, str) else json.dumps(res, ensure_ascii=False, default=str)
+def _result_text(res): return res if isinstance(res, (str, ToolResponse)) else json.dumps(res, ensure_ascii=False, default=str)
 
 
 class LocalBridge:
