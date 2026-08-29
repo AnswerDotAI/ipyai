@@ -30,14 +30,13 @@ async def test_spawn_seed_pump_shutdown(gateway):
     types = [mt for cid, mt in got if cid == 'cellA']
     assert {'stream', 'execute_input', 'execute_result'} <= set(types), f'cell traffic not routed: {got}'
     assert all(cid == 'cellA' for cid, mt in got), f'untagged traffic leaked: {got}'
-    outs = []
-    ret = await ks.run_cell('cellB', "'mine'", outs.append)   # a live tagged cell: streamed and returned
-    assert 'mine' in str(outs) and outs == ret
+    outs = [o async for o in ks.run_cell('cellB', "'mine'")]   # a live tagged cell, streamed
+    assert 'mine' in str(outs)
     assert {cid for cid, mt in got} == {'cellA', 'cellB'}, f'unexpected cell ids: {got}'
 
     async def answer(prompt, password): return 'blue'   # the app's handler shape (cli._on_stdin)
     ks.on_stdin = answer
-    outs = await ks.run_cell('cellC', "print('got', input('fav? '))")
+    outs = [o async for o in ks.run_cell('cellC', "print('got', input('fav? '))")]
     assert 'got blue' in str(outs), f'stdin round trip failed: {outs}'
 
     kid = ks.kid

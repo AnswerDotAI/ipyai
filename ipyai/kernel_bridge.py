@@ -71,15 +71,15 @@ class KernelBridge:
 
     async def run_py(self, code):
         "The `py` tool: run `code` as a cell tagged `py{token}` through the session pump, rendered as clikernel does (tagged text, capped tracebacks, images gated by `aim_info`)"
-        outs = await self.session.run_cell(f'py{rtoken_hex(4)}', code, allow_stdin=False, store_history=False, stop_on_error=False)   # no history: kernel rules tell model cells from the user's; an error must not abort parallel calls queued behind it
+        outs = [o async for o in self.session.run_cell(f'py{rtoken_hex(4)}', code, allow_stdin=False, store_history=False, stop_on_error=False)]   # no history: kernel rules tell model cells from the user's; an error must not abort parallel calls queued behind it
         res = merge_media(render_text(outs, tb_maxlen=TB_MAXLEN), output_parts(Message(code, output=outs), self.aim_info))
         return res if isinstance(res, str) else ToolResponse(res)
 
     async def read_var(self, name):
         "Value of live expression `name` (`foo` or `foo.bar(...)`); an `<error .../>` string when it raises."
-        return (await self.client.eval_exprs(vs=[name])).get(name)
+        return (await self.client.eval_exprs(vs=[name], priority=False)).get(name)
 
-    async def read_vars(self, names): return await self.client.eval_exprs(vs=list(names))
+    async def read_vars(self, names): return await self.client.eval_exprs(vs=list(names), priority=False)
 
     def set_vars(self, **vals):
         "Assign values into the kernel's user namespace, silently."

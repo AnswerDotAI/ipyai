@@ -115,12 +115,12 @@ async def test_stop_and_resume():
     app = App(tty, history=None)
     async with app.k:
         app.paint()
-        app.comp.on_bytes(b'!sleep 30\r')
-        await _until(lambda: app.fg_job is not None)
+        app.comp.on_bytes(b"!sh -c 'echo go; exec sleep 30'\r")
+        await _until(lambda: app.fg_job is not None and 'go' in app.fg_job[1].contents())  # the child printed: it exists and owns the terminal, so ^Z cannot land on bash instead
         app.shell.write(b'\x1a')           # ^Z via the pty line discipline
         await _until(lambda: app.fg_job is None)         # the stop bounced us back to the prompt
         app.comp.on_bytes(b'!fg\r')
-        await _until(lambda: app.fg_job is not None)
+        await _until(lambda: app.fg_job is not None and 'sleep' in app.fg_job[1].contents())  # fg reported the job: it has been resumed into the foreground
         app.shell.write(b'\x03')           # ^C the resumed child
         await _until(lambda: app.fg_job is None)
 

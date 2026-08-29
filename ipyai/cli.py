@@ -304,7 +304,8 @@ class App:
         self.cell_outputs = []
         self.paint()
         m = self.assistant.add_cell(code) if self.assistant is not None else None   # the cell exists before it runs: its id tags the execute
-        try: await self.k.run_cell(m.id if m is not None else f'cell{rtoken_hex(4)}', code, self.on_out)
+        try:
+            async for out in self.k.run_cell(m.id if m is not None else f'cell{rtoken_hex(4)}', code): self.on_out(out)
         finally:
             if self.assistant is not None: self.assistant.finish_cell(m, self.cell_outputs)
             self.cell_outputs = None
@@ -597,7 +598,8 @@ class App:
         execution must wait for idle or it would deadlock."""
         codes, self._load_codes = self._load_codes, []
         while self.k.busy: await asyncio.sleep(0.05)
-        for mid, code in codes: await self.k.run_cell(mid, code, self._silent_out)
+        for mid, code in codes:
+            async for out in self.k.run_cell(mid, code): self._silent_out(out)
         self.paint()
 
     def _silent_out(self, c):
