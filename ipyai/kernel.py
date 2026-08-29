@@ -58,29 +58,19 @@ class KernelSession:
         c = m['content']
         return self.on_stdin(c.get('prompt', ''), c.get('password', False))
 
-    async def run_cell(self, cid, code, on_output=None, allow_stdin=None, **kw):
-        """Execute `code` tagged as cell `cid` (msg_id `{cid}.{token}`): its messages stream through
-        `run`'s callback as they arrive, and the call returns the nbformat outputs after reply and idle.
+    async def run_cell(self, cid, code, allow_stdin=None, **kw):
+        """Execute `code` tagged as cell `cid` (msg_id `{cid}.{token}`), yielding each nbformat output
+        as it arrives. Comm traffic goes to `on_comm`, and every message to the `on_cell_msg` observer.
         Several cells can be in flight at once; each collects only its own traffic."""
         if allow_stdin is None: allow_stdin = self.on_stdin is not None
         stdin = self._answer_stdin if allow_stdin and self.on_stdin is not None else None
-        outs = []
-        def _msg(m):
-            if self.on_cell_msg is not None:
-                try: self.on_cell_msg(cid, m)
-                except Exception: log.exception('on_cell_msg failed')
-            typ = m['msg_type']
-            if typ in OUTPUT_MSGS:
-                out = msg2out(m)
-                outs.append(out)
-                if on_output is not None:
-                    try: on_output(out)
-                    except Exception: log.exception('on_output failed')
-            elif typ in COMM_MSGS and self.on_comm is not None: self.on_comm(typ, m['content'])
         self.busy = True
         try:
-            await self.kc.run(code, msg_id=f'{cid}.{rtoken_hex(4)}', on_output=_msg, on_stdin=stdin, **kw)
-            return outs
+            async for m in self.kc.run(code, msg_id=f'{cid}.{rtoken_hex(4)}', on_stdin=stdin, **kw):
+                if self.on_cell_msg is not None: self.on_cell_msg(cid, m)
+                typ = m['msg_type']
+                if typ in OUTPUT_MSGS: yield msg2out(m)
+                elif typ in COMM_MSGS and self.on_comm is not None: self.on_comm(typ, m['content'])
         finally: self.busy = False
 
     async def interrupt(self): await self.mgr.interrupt_kernel(self.kid)

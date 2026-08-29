@@ -29,8 +29,7 @@ async def test_bridge_and_writeback(gateway):
         bridge.set_vars(**{LAST_RESPONSE: 'the reply text'})
         assert await bridge.read_var(LAST_RESPONSE) == 'the reply text'
         # a normal cell still renders normally after bridge traffic (no iopub leakage)
-        outs = []
-        await k.run_cell('cellZ', 'print("clean")', outs.append)
+        outs = [o async for o in k.run_cell('cellZ', 'print("clean")')]
         assert any('clean' in o.get('text', '') for o in outs if o['output_type'] == 'stream')
 
 
