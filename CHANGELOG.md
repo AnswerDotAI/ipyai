@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.5
+
+### New Features
+
+- run_cell is now an async generator, and bridge reads no longer jump the kernel queue ([#34](https://github.com/AnswerDotAI/ipyai/pull/34)), thanks to [@jph00](https://github.com/jph00)
+
+
 ## 0.1.4
 
 ### New Features
