@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.6
+
+### New Features
+
+- Move reentrant kernel operations onto the sidecar ([#35](https://github.com/AnswerDotAI/ipyai/pull/35)), thanks to [@jph00](https://github.com/jph00)
+
+
 ## 0.1.5
 
 ### New Features
