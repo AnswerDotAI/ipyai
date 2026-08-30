@@ -6,7 +6,7 @@ formatted form. Ctx assembly is `dlg2hist` -- no hand-rolled XML -- and every mo
 fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4')."""
 import asyncio, ast, os
 from aidialog.dialog import Dialog, INTERRUPTED
-from aidialog.msg_parts import Part, Text
+from aidialog.msg_parts import Text
 from aidialog.hist import dlg2hist, get_exprs, is_nameerr, vars_hist, warning_tag
 from fastcore.xml import to_xml
 from .config import load_config, load_sysp, SUGGEST_SP, render_sp
@@ -36,7 +36,7 @@ def _is_note(source):
     try: tree = ast.parse(source)
     except SyntaxError: return False
     return (len(tree.body) == 1 and isinstance(tree.body[0], ast.Expr)
-            and isinstance(tree.body[0].value, ast.Constant) and isinstance(tree.body[0].value.value, str))
+        and isinstance(tree.body[0].value, ast.Constant) and isinstance(tree.body[0].value.value, str))
 
 def _note_str(source): return ast.parse(source).body[0].value.value
 
@@ -44,7 +44,7 @@ def code_blocks(md):
     "Python fenced blocks of `md`, in order, via mdhtml structure (never regex)."
     import mdhtml
     return [b['text'].rstrip('\n') for b in mdhtml.blocks(md or '')
-            if b['type'] == 'code_block' and b.get('lang') in ('python', 'py') and b.get('text', '').strip()]
+        if b['type'] == 'code_block' and b.get('lang') in ('python', 'py') and b.get('text', '').strip()]
 
 class _BridgeNS(dict):
     """Dict-shaped proxy routing fastllm's ns-based tool dispatch through the ToolRegistry bridge:
@@ -107,13 +107,12 @@ class Assistant:
         return u.prompt_tokens + u.completion_tokens, mx
 
     def _make_chat(self, model, sp, tools=None, ns=None, hist=None):
-        if self._chat_factory is not None:
-            return self._chat_factory(model=model, sp=sp, tools=tools, ns=ns, hist=hist)
+        if self._chat_factory is not None: return self._chat_factory(model=model, sp=sp, tools=tools, ns=ns, hist=hist)
         from fastllm.chat import AsyncChat
         from fastllm.acomplete import split_vendor
         v, _ = split_vendor(model)
         return AsyncChat(model=model, sp=sp, tools=tools or None, hist=hist or None,
-                         ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
+            ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
     def add_cell(self, source):
         "Record a cell about to run as a code/note message, returned so its id can tag the execute (None when nothing records)."
@@ -201,7 +200,7 @@ class Assistant:
         self.last_use = getattr(chat, 'use', None)
         self.last_req_use = getattr(chat, 'last_req_use', None)
         if self.bridge:
-            try: self.bridge.set_vars(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
+            try: self.bridge.client.xpush(**{LAST_PROMPT: prompt, LAST_RESPONSE: text})
             except Exception: pass
         self.save()
         return text

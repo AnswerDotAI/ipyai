@@ -13,7 +13,7 @@ from ipyai.kernel_bridge import KernelBridge
 
 
 async def test_bridge_and_writeback(gateway):
-    "The py tool runs the model's code as a plain cell, so its outputs come back as the user would see them: text, tracebacks, and images; set_vars lands LAST_RESPONSE for the user."
+    "The py tool runs as a plain cell with normal output, and sidecar xpush lands LAST_RESPONSE for the user."
     async with KernelSession(url=gateway) as k:
         bridge, tools = await setup_tools(k)
         names = await tools.names()
@@ -26,7 +26,7 @@ async def test_bridge_and_writeback(gateway):
         assert 'ZeroDivisionError' in err and 'division by zero' in err
         img = await tools.call_text('py', {'code': 'from IPython.display import Image, display\nfrom aidialog.dialog import tiny_png\ndisplay(Image(data=tiny_png))'})
         assert isinstance(img, ToolResponse) and any(isinstance(p, InputImage) for p in img.content)
-        bridge.set_vars(**{LAST_RESPONSE: 'the reply text'})
+        bridge.client.xpush(**{LAST_RESPONSE: 'the reply text'})
         assert await bridge.read_var(LAST_RESPONSE) == 'the reply text'
         # a normal cell still renders normally after bridge traffic (no iopub leakage)
         outs = [o async for o in k.run_cell('cellZ', 'print("clean")')]

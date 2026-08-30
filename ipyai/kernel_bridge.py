@@ -29,12 +29,11 @@ class KernelBridge:
 
     async def _exec(self, code, *, timeout=_EXEC_TIMEOUT):
         cts = (await self.client.reply(code, silent=True, store_history=False, timeout=timeout))["content"]
-        if cts.get("status") != "ok":
-            raise RuntimeError(cts.get("evalue") or cts.get("ename") or "kernel execute failed")
+        if cts.get("status") != "ok": raise RuntimeError(cts.get("evalue") or cts.get("ename") or "kernel execute failed")
 
     async def present_names(self, names):
         "Return subset of `names` already defined and callable in the kernel's user_ns."
-        r = await self.client.eval("[n for n in %r if n in globals() and callable(globals()[n])]" % list(names), _call=False)
+        r = await self.client.eval("[n for n in %r if n in globals() and callable(globals()[n])]" % list(names), call_=False)
         return list(r) if isinstance(r, list) else []
 
     async def seed_tools(self, skip=()):
@@ -77,10 +76,4 @@ class KernelBridge:
 
     async def read_var(self, name):
         "Value of live expression `name` (`foo` or `foo.bar(...)`); an `<error .../>` string when it raises."
-        return (await self.client.eval_exprs(vs=[name], priority=False)).get(name)
-
-    async def read_vars(self, names): return await self.client.eval_exprs(vs=list(names), priority=False)
-
-    def set_vars(self, **vals):
-        "Assign values into the kernel's user namespace, silently."
-        self.client.xpush(**vals)
+        return (await self.client.eval_exprs(vs=[name])).get(name)

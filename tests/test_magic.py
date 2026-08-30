@@ -5,9 +5,7 @@ from teleprint.testing import EmuTty
 from ipyai.cli import App
 from ipyai.assistant import Assistant
 
-def mk_cfg(**kw):
-    return dict(model='m', suggest_model='cm', think='l',
-                code_theme='ansi_dark', prompt_mode=False) | kw
+def mk_cfg(**kw): return dict(model='m', suggest_model='cm', think='l', code_theme='ansi_dark', prompt_mode=False) | kw
 
 async def _settle(app, pred, timeout=25):
     end = asyncio.get_running_loop().time() + timeout
@@ -54,7 +52,7 @@ async def test_ipyai_magic_assignment():
         async for _ in app.k.run_cell(f'cell{rtoken_hex(4)}', '%load_ext ipyai.magic'): pass
         app.comp.on_bytes(b'x = %ipyai think s\r')
         await _settle(app, lambda: not app.k.busy and app.assistant.think == 's')
-        assert await app.k.kc.eval('str(x)', _call=False) == 'think = s'
+        assert await app.k.kc.eval('str(x)', call_=False) == 'think = s'
 
 async def test_ipyai_magic_no_host():
     "With no host listening the magic fails loudly instead of hanging or silently no-opping."

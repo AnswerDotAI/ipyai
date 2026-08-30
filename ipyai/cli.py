@@ -15,7 +15,6 @@ from teleprint.transcript import TranscriptView
 from .shell import GateShell
 import aidialog.ipynb  # noqa: F401 -- activates the Message.cell_meta/to_cell patches (meta_attrs serialization)
 from aidialog.msg_parts import Text as TextPart, ToolUse, ToolResult
-from fastcore.ansi import strip_ansi
 from fastcore.basics import str_enum
 from fastcore.utils import rtoken_hex
 from fastcore.script import call_parse
@@ -36,10 +35,9 @@ def _fmt_tk(n):
     return str(n)
 
 
-GUTTERS = {'sh': ('$$$ ', 'bold yellow'), 'in': ('»»» ', 'bold green'), 'out': ('««« ', 'bright_blue'),
-           'result': ('««« ', 'bright_blue'), 'error': ('««« ', 'red'), 'image': ('««« ', 'magenta'),
-           'ask': ('››› ', 'bold magenta'), 'ai': ('‹‹‹ ', 'magenta'),
-           'think': ('‹‹‹ ', 'dim'), 'tool': ('≡≡≡ ', 'yellow')}
+GUTTERS = {'sh': ('$$$ ', 'bold yellow'), 'in': ('»»» ', 'bold green'), 'out': ('««« ', 'bright_blue'), 'result': ('««« ', 'bright_blue'),
+    'error': ('««« ', 'red'), 'image': ('««« ', 'magenta'), 'ask': ('››› ', 'bold magenta'), 'ai': ('‹‹‹ ', 'magenta'),
+    'think': ('‹‹‹ ', 'dim'), 'tool': ('≡≡≡ ', 'yellow')}
 
 _NTH = {'!': 1, '@': 2, '#': 3, '$': 4, '%': 5, '^': 6, '&': 7, '*': 8, '(': 9}  # alt-shift digits arrive shifted
 
@@ -313,7 +311,7 @@ class App:
 
     async def _kernel_cwd(self):
         "The kernel's cwd, queried per spawn: bare-`!` jobs and kernel-side `!` should agree on where they run."
-        try: return await self.k.kc.eval("__import__('os').getcwd()", _call=False)
+        try: return await self.k.kc.eval("__import__('os').getcwd()", call_=False)
         except Exception: return os.getcwd()
 
     def _job_note(self, s): self.comp.print_block(Text(s, style='dim'), gutter=_gutter('out'), tag='out')
@@ -359,7 +357,7 @@ class App:
         left = self._shdrain_mirror.contents().rstrip()
         if left:
             blk = self.comp.print_block(Text(left, style='dim'), gutter=_gutter('out'), tag='out',
-                                        collapse_at=self.collapse_at, source=left)
+                collapse_at=self.collapse_at, source=left)
             if self.assistant is not None:
                 m = self.assistant.add_cell('!# background output')
                 self.assistant.finish_cell(m, [dict(output_type='stream', name='stdout', text=left + '\n')])
@@ -370,8 +368,7 @@ class App:
         borrow; returns the exit code (None if the shell itself exited). `record=False` (the F2 editor
         borrow) skips the transcript/dialog recording and the exit-code error block."""
         try: await self._ensure_shell()
-        except RuntimeError as e:
-            return self.comp.print_block(Text(str(e), style='red'), gutter=_gutter('error'), tag='error')
+        except RuntimeError as e: return self.comp.print_block(Text(str(e), style='red'), gutter=_gutter('error'), tag='error')
         await self._stop_drain()
         mirror = pyghostty.Terminal(*self.tty.size)
         loop, fd = asyncio.get_running_loop(), getattr(self.tty, 'fd', None)
@@ -488,7 +485,7 @@ class App:
         if not args:
             s = [f'{k} = {getattr(a, k)}' for k in ('model', 'suggest_model', 'think')]
             s += [f'code_theme = {self.theme}', f'mode = {self.mode}', '',
-                  'commands: model | suggest_model | think | code_theme [VALUE], prompt, sessions, reset, save PATH, load PATH']
+                'commands: model | suggest_model | think | code_theme [VALUE], prompt, sessions, reset, save PATH, load PATH']
             return '\n'.join(s)
         cmd, *rest = args
         if cmd in ('model', 'suggest_model', 'think'):
@@ -501,8 +498,7 @@ class App:
             self._set_mode('prompt' if self.mode != 'prompt' else 'code')
             self.paint()
             return f'mode = {self.mode}'
-        if cmd == 'sessions':
-            return _sessions_text(list_sessions())
+        if cmd == 'sessions': return _sessions_text(list_sessions())
         if cmd == 'reset':
             a.reset()
             a.session = Session()
@@ -582,8 +578,7 @@ class App:
         a = self.assistant
         dlg = read_ipynb(path)
         if dlg is None: raise ValueError(f'cannot read dialog: {path}')
-        dlg.messages = [m for m in dlg.messages
-                        if not (m.msg_type == 'code' and m.content.lstrip().startswith('%ipyai'))]
+        dlg.messages = [m for m in dlg.messages if not (m.msg_type == 'code' and m.content.lstrip().startswith('%ipyai'))]
         for m in dlg.messages:
             if m.msg_type == 'prompt': a.last_response = m.ai_res
         dlg.name = os.path.basename(a.cwd)
@@ -632,8 +627,7 @@ class App:
         if sigs and isinstance(sigs, list):
             s = sigs[0]
             self.tip = Signature(s['label'], [p['desc'] for p in s['params']], s.get('idx'), s.get('doc', ''))
-        elif text := await self.k.kc.inspect(self.buf.text, self.buf.cursor):
-            self.tip = Tooltip(Text.from_ansi(text))
+        elif text := await self.k.kc.inspect(self.buf.text, self.buf.cursor): self.tip = Tooltip(Text.from_ansi(text))
         self.paint()
 
     def _dismiss(self):
@@ -721,8 +715,7 @@ class App:
             self.ai_sugg = (snap[0], snap[1], text)
             self.paint()
 
-    def _nmsgs(self):
-        return len(self.assistant.dlg.messages) if self.assistant is not None else 0
+    def _nmsgs(self): return len(self.assistant.dlg.messages) if self.assistant is not None else 0
 
     def _stamp_exchange(self, before_bid, nmsg):
         """Link the exchange's blocks to its Dialog message: every block printed since `before_bid` gets the
@@ -767,8 +760,7 @@ class App:
         dropped = a.dlg.messages[i:]
         ids = {x.id for x in dropped}
         a.dlg.remove_msgs(dropped)
-        for b in [b for b in self.comp.blocks.values() if getattr(b, 'msg_id', None) in ids]:
-            self.comp.remove_block(b)
+        for b in [b for b in self.comp.blocks.values() if getattr(b, 'msg_id', None) in ids]: self.comp.remove_block(b)
         a.n_cells = sum(1 for x in a.dlg.messages if x.msg_type in ('code', 'note'))
         a.save()
 
@@ -871,8 +863,7 @@ class App:
             self._pending = []
             self.comp.spawn(self.on_enter(), name='run')
             self.paint()
-        elif k.name == 'enter':
-            tv.toggle_current()
+        elif k.name == 'enter': tv.toggle_current()
         else:
             self.buf.handle(k)
             tv.draw()
@@ -942,10 +933,8 @@ class App:
             if len(bs) >= n: self.buf.insert(bs[n - 1])
         elif k.name == 'shift+alt+up': self._cycle_blocks(1)
         elif k.name == 'shift+alt+down': self._cycle_blocks(-1)
-        elif k.name == 'tab' and self.menu:
-            self.menu.cycle(1)
-        elif k.name == 'shift+tab' and self.menu:
-            self.menu.cycle(-1)
+        elif k.name == 'tab' and self.menu: self.menu.cycle(1)
+        elif k.name == 'shift+tab' and self.menu: self.menu.cycle(-1)
         elif k.name == 'enter' and self.menu:
             self._dismiss()  # accepts the highlighted match; the next Enter submits
         elif k.name == 'enter' and self.stdin_fut is not None and not self.stdin_fut.done():
@@ -1054,7 +1043,7 @@ async def main(
     if sessions: return print(_sessions_text(list_sessions()))
     cfg = load_config()
     cfg |= {k: str(v) for k, v in dict(model=model, suggest_model=suggest_model,
-                                       think=think, code_theme=code_theme).items() if v}
+        think=think, code_theme=code_theme).items() if v}
     if Prompt_mode: cfg['prompt_mode'] = True
     t = RealTty()
     t.write('\x1b[?1000;1006h\x1b[?2004h')  # SGR mouse + bracketed paste
@@ -1072,8 +1061,7 @@ async def main(
         except ValueError:
             if kernel: raise            # an explicitly named kernel that's gone is an error, not a fallback
             await app.k.start()         # the session's stamped kernel is gone: cold resume on a fresh kernel
-        await app.attach_assistant(resume=Resume or None, load=Load,
-                                    fresh=Resume is None)  # plain launch is fresh; bare -r (const '') opens the picker
+        await app.attach_assistant(resume=Resume or None, load=Load, fresh=Resume is None)  # plain launch is fresh; bare -r (const '') opens the picker
         await app.run()
     finally:
         t.write('\x1b[?2004l\x1b[?1000;1006l\r\n')

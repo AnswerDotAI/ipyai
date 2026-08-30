@@ -10,7 +10,7 @@ async def test_bridge_runspython_and_reads_vars(kernel_bridge):
     val = await kernel_bridge.read_var("y")
     assert val == 42
 
-    vals = await kernel_bridge.read_vars(["x", "y"])
+    vals = await kernel_bridge.client.get_vars(vs=["x", "y"])
     assert vals == {"x": 41, "y": 42}
 
     names = await kernel_bridge.available_names(force=True)
@@ -56,4 +56,3 @@ async def test_bridge_preserves_full_response_from_kernel_tool(kernel_bridge, mo
 
     assert isinstance(res, FullResponse), f"FullResponse type must survive the kernel bridge, got {type(res).__name__}"
     assert str(res) == payload
-

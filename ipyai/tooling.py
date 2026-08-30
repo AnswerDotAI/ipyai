@@ -37,9 +37,6 @@ class LocalBridge:
         try: return eval(expr, self.ns)
         except Exception: return None
 
-    async def read_vars(self, names): return {n: await self.read_var(n) for n in names}
-
-
 class ToolRegistry:
     "Uniform tool surface for AI backends; delegates to a bridge (LocalBridge or KernelBridge)."
     def __init__(self, bridge):
