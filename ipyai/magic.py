@@ -2,12 +2,10 @@
 
 The magic is a normal kernel-side line magic (registered by the app at attach time), so
 tab-completion of the name and `%ipyai?` help come from the kernel's own machinery. Every
-command is request/reply: the magic sends on the 'ipyai' comm, calls `kernel.unlock()` so the
-host's ack can be processed mid-cell, and awaits it with a timeout -- so "no ipyai host
-attached" fails loudly, and results return as ordinary cell output."""
+command is request/reply: the magic sends on the 'ipyai' comm and awaits the host's reply with a
+timeout, so "no ipyai host attached" fails loudly and results return as ordinary cell output."""
 import asyncio
 from fastcore.basics import PrettyString
-from IPython import get_ipython
 from IPython.core.error import UsageError
 
 _TIMEOUT = 5  # seconds to wait for the host's ack
@@ -44,16 +42,12 @@ async def ipyai(line=''):
     %ipyai load PATH              import a dialog .ipynb into the session
 
     Setters double as getters: `%ipyai model` (no value) shows the current value."""
-    ip = get_ipython()
-    release = getattr(getattr(ip, 'kernel', None), 'unlock', None)
-    if release is None: raise RuntimeError('%ipyai needs an ipyai host (an ipymini kernel with unlock support)')
     cmd = line.split()
     _state['n'] += 1
     req = _state['n']
     fut = asyncio.get_running_loop().create_future()
     _state['pending'][req] = fut
     _comm().send(dict(cmd=cmd, req=req))
-    release()  # release the shell queue so the host's comm_msg ack can run while we await
     try: d = await asyncio.wait_for(fut, _TIMEOUT)
     except asyncio.TimeoutError:
         _state['pending'].pop(req, None)
