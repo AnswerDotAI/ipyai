@@ -8,6 +8,7 @@ from jupywire.route import OUTPUT_MSGS, COMM_MSGS
 
 DEFAULT_URL = 'http://127.0.0.1:8787'   # rustygate's default port; IPYAI_GATEWAY overrides
 log = logging.getLogger(__name__)
+kernel_env = dict(PYTHONSAFEPATH='1')
 
 
 class KernelSession:
@@ -33,7 +34,7 @@ class KernelSession:
             kid = first(k['id'] for k in ks if k['id'].startswith(kernel))
             if not kid: raise ValueError(f'no kernel matching {kernel!r} on {self.url}: {[k["id"][:8] for k in ks]}')
             self.kc = await JupyAsyncKernelClient.connect(self.url, kernel=kid)
-        else: self.kc = await JupyAsyncKernelClient.connect(self.url, cwd=str(cwd or os.getcwd()), env=dict(os.environ, **(env or {})))
+        else: self.kc = await JupyAsyncKernelClient.connect(self.url, cwd=str(cwd or os.getcwd()), env=dict(os.environ, **kernel_env, **(env or {})))
         self.kid, self.owned = self.kc.kernel_id, self.kc.owned
         if self.owned:   # seed the REPL services (sig_help etc.); attached kernels are taken as found
             try: await self.kc.reply("get_ipython().extension_manager.load_extension('ipykernel_helper.core')",
