@@ -1,78 +1,69 @@
-"Kernel lifecycle over a rustygate gateway: jupyasyncclient + ipymini, iopub rendered as it arrives."
-import logging, os
-from fastcore.utils import first, rtoken_hex
-from fastcore.nbio import msg2out
+"""Kernel lifecycle over a rustygate gateway: one owned or attached kernel, its setup, and the one inbound message hook."""
+import os
+from contextlib import suppress
 from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
 from jupyasyncclient import JupyAsyncKernelClient
-from jupywire.route import OUTPUT_MSGS, COMM_MSGS
+from . import config
+from .tools import KernelTools, SEED_IMPORTS
 
 DEFAULT_URL = 'http://127.0.0.1:8787'   # rustygate's default port; IPYAI_GATEWAY overrides
-log = logging.getLogger(__name__)
 kernel_env = dict(PYTHONSAFEPATH='1')
 
+def _startup_src(path):
+    "The startup file's source wrapped so `__file__` is bound to its path during the run, and absent after (clikernel's shape)"
+    return f"""__file__ = {str(path)!r}
+try: exec(compile({path.read_text()!r}, __file__, 'exec'))
+finally: del __file__"""
 
 class KernelSession:
-    """One gateway kernel and its ws client; incremental iopub for UIs (messages surface as they
-    arrive, not drained at completion). rustygate is a hard runtime prerequisite, like any Jupyter
-    server: an unreachable gateway fails loudly at `start` with the command to run."""
+    """One gateway kernel and its ws client. rustygate is a hard runtime prerequisite, like any Jupyter
+    server: an unreachable gateway fails loudly at `start` with the command to run. Every inbound kernel
+    message goes once to `on_jmsg`, whatever request it belongs to."""
     def __init__(self, url=None):
         self.url = url or os.environ.get('IPYAI_GATEWAY', DEFAULT_URL)
-        self.mgr, self.kc, self.kid, self.owned, self.busy = None, None, None, False, False
-        self.on_comm = None   # host-side comm handler: (msg_type, content) for comm traffic seen on iopub
-        self.on_stdin = None  # async (prompt, password) -> str, answering kernel input_requests
-        self.on_cell_msg = None  # (cell_id, jmsg) observer for merged-stream traffic tagged `{cell_id}.{token}`
-
+        self.mgr, self.kc, self.kid, self.owned = None, None, None, False
+        self.on_jmsg = None
 
     async def start(self, kernel='', cwd=None, env=None):
-        """Create an owned kernel (closed on exit), or attach to `kernel` by id prefix (taken as
-        found: not seeded, never stopped by us). Owned kernels start in `cwd` (ours if None) with
-        `env` laid over our environment; ownership is `connect`'s: it stamps `kc.owned`, honored at close."""
+        """Create an owned kernel (closed on exit, with ipykernel_helper's REPL services loaded), or attach to
+        `kernel` by id prefix (taken as found: nothing loaded, never stopped by us). An unknown or ambiguous
+        prefix raises `ValueError`. Owned kernels start in `cwd` (ours if None) with `env` laid over our environment."""
         self.mgr = JupyAsyncMultiKernelManager(self.url)
         try: ks = await self.mgr.list_kernels()   # reachability and auth fail here, loudly
         except Exception as e: raise ConnectionError(f'no rustygate gateway at {self.url} (start one with `rustygate`): {e}') from e
         if kernel:
-            kid = first(k['id'] for k in ks if k['id'].startswith(kernel))
-            if not kid: raise ValueError(f'no kernel matching {kernel!r} on {self.url}: {[k["id"][:8] for k in ks]}')
-            self.kc = await JupyAsyncKernelClient.connect(self.url, kernel=kid)
+            ids = [k['id'] for k in ks if k['id'].startswith(kernel)]
+            if len(ids) != 1:
+                shown = [i[:8] for i in (ids or [k['id'] for k in ks])]
+                raise ValueError(f"{'ambiguous' if ids else 'no'} kernel matching {kernel!r} on {self.url}: {shown}")
+            self.kc = await JupyAsyncKernelClient.connect(self.url, kernel=ids[0])
         else: self.kc = await JupyAsyncKernelClient.connect(self.url, cwd=str(cwd or os.getcwd()), env=dict(os.environ, **kernel_env, **(env or {})))
         self.kid, self.owned = self.kc.kernel_id, self.kc.owned
-        if self.owned:   # seed the REPL services (sig_help etc.); attached kernels are taken as found
-            try: await self.kc.reply("get_ipython().extension_manager.load_extension('ipykernel_helper.core')",
-                                     silent=True, store_history=False, timeout=10)
-            except Exception: pass
         self.kc.on_jmsg = self._on_jmsg
+        if self.owned:
+            with suppress(RuntimeError): await self.exec("get_ipython().extension_manager.load_extension('ipykernel_helper.core')", timeout=10)
         return self
 
     def _on_jmsg(self, jmsg):
-        """A message left unmatched by `route` whose parent msg_id is `{cell_id}.{token}` is offered to the
-        `on_cell_msg` observer (post-idle traffic, e.g. a background thread's print); the rest is bridge
-        plumbing, dropped. stdin never lands here: each run owns its requests via `run`'s `on_stdin` hook."""
-        pid = jmsg.get('parent_header', {}).get('msg_id') or ''
-        if '.' not in pid: return
-        cid = pid.split('.', 1)[0]
-        if self.on_cell_msg is not None:
-            try: self.on_cell_msg(cid, jmsg)
-            except Exception: log.exception('on_cell_msg failed')
+        if self.on_jmsg is not None: self.on_jmsg(jmsg)
 
-    def _answer_stdin(self, m):
-        "run()'s `on_stdin` hook: adapt the wire `input_request` to the app's `(prompt, password)` handler."
-        c = m['content']
-        return self.on_stdin(c.get('prompt', ''), c.get('password', False))
+    async def exec(self, code, timeout=20):
+        "Run `code` silently, outside the user's history; a kernel error raises `RuntimeError`."
+        cts = (await self.kc.reply(code, silent=True, store_history=False, timeout=timeout))['content']
+        if cts.get('status') != 'ok': raise RuntimeError(cts.get('evalue') or cts.get('ename') or 'kernel execute failed')
 
-    async def run_cell(self, cid, code, allow_stdin=None, **kw):
-        """Execute `code` tagged as cell `cid` (msg_id `{cid}.{token}`), yielding each nbformat output
-        as it arrives. Comm traffic goes to `on_comm`, and every message to the `on_cell_msg` observer.
-        Several cells can be in flight at once; each collects only its own traffic."""
-        if allow_stdin is None: allow_stdin = self.on_stdin is not None
-        stdin = self._answer_stdin if allow_stdin and self.on_stdin is not None else None
-        self.busy = True
-        try:
-            async for m in self.kc.run(code, msg_id=f'{cid}.{rtoken_hex(4)}', on_stdin=stdin, **kw):
-                if self.on_cell_msg is not None: self.on_cell_msg(cid, m)
-                typ = m['msg_type']
-                if typ in OUTPUT_MSGS: yield msg2out(m)
-                elif typ in COMM_MSGS and self.on_comm is not None: self.on_comm(typ, m['content'])
-        finally: self.busy = False
+    async def setup(self):
+        """Set up an owned kernel for the AI and the app: the `%ipyai` magic, the user's `config.STARTUP_PATH`
+        (an error there names the file and raises), then imports for the custom tools the kernel does not
+        already define."""
+        with suppress(RuntimeError): await self.exec("get_ipython().extension_manager.load_extension('ipyai.magic')")
+        if config.STARTUP_PATH.exists():
+            try: await self.exec(_startup_src(config.STARTUP_PATH), timeout=60)
+            except RuntimeError as e: raise RuntimeError(f'{config.STARTUP_PATH}: {e}') from None
+        present = await KernelTools(self.kc).names()
+        for name, stmt in SEED_IMPORTS.items():
+            if name in present: continue
+            with suppress(RuntimeError): await self.exec(stmt)
 
     async def interrupt(self): await self.mgr.interrupt_kernel(self.kid)
 

@@ -3,7 +3,6 @@ import os, tempfile
 import pytest, pytest_asyncio
 
 import ipyai.config as config
-from ipyai.bridge import setup_tools
 
 
 _IPYTHONDIR_SESSION = None
@@ -23,30 +22,19 @@ def pytest_unconfigure(config):
 
 @pytest.fixture(autouse=True)
 def temp_config_paths(tmp_path, monkeypatch):
-    "Isolate config/sysp so tests never read or write the user's real XDG ipyai config."
+    "Isolate tests from the user's setup: their config files and `IPYAI_MODEL` never apply, and each test runs in its own directory, so no session files are left behind."
     cfg = tmp_path/"config"
     cfg.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(config, "CONFIG_DIR", cfg)
     monkeypatch.setattr(config, "CONFIG_PATH", cfg/"config.json")
     monkeypatch.setattr(config, "SYSP_PATH", cfg/"sysp.txt")
     monkeypatch.setattr(config, "STARTUP_PATH", cfg/"startup.py")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv('IPYAI_MODEL', raising=False)
     yield
 
 
-async def _prepare_kernel_bridge(ks):
-    "Seed the test kernel exactly as the app does (`setup_tools`): ipykernel_helper, the `py` tool, the custom tool imports."
-    bridge, _ = await setup_tools(ks)
-    return bridge
-
-
-async def _snapshot_globals(bridge):
-    return set(await bridge.read_var("[k for k in globals() if not k.startswith('_')]") or [])
-
-
-async def _clear_extras(bridge, baseline):
-    extras = await bridge.read_var(
-        "[k for k in globals() if not k.startswith('_') and k not in %r]" % list(baseline)) or []
-    if extras: await bridge._exec("\n".join(f"globals().pop({n!r}, None)" for n in extras))
+_USER_NAMES = "[k for k in globals() if not k.startswith('_')]"
 
 
 @pytest.fixture(scope="session")
@@ -68,17 +56,20 @@ def _gateway_env(gateway):
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def session_kernel(gateway):
-    "One kernel + bridge for the whole session, on pytest-asyncio's session loop."
+    "One kernel, set up as the app sets up an owned kernel, for the whole session, on pytest-asyncio's session loop."
     from ipyai.kernel import KernelSession
     ks = await KernelSession(url=gateway).start()
-    bridge = await _prepare_kernel_bridge(ks)
-    baseline = await _snapshot_globals(bridge)
-    yield dict(ks=ks, client=ks.kc, bridge=bridge, baseline=baseline)
+    await ks.setup()
+    baseline = set(await ks.kc.eval(_USER_NAMES, call_=False) or [])
+    yield dict(ks=ks, baseline=baseline)
     await ks.close()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def kernel_bridge(session_kernel):
-    "Session kernel bridge; teardown clears any user_ns names the test added."
-    yield session_kernel["bridge"]
-    await _clear_extras(session_kernel["bridge"], session_kernel["baseline"])
+async def kernel_tools(session_kernel):
+    "`KernelTools` over the session kernel; teardown clears any user_ns names the test added."
+    from ipyai.tools import KernelTools
+    ks = session_kernel["ks"]
+    yield KernelTools(ks.kc)
+    extras = [k for k in (await ks.kc.eval(_USER_NAMES, call_=False) or []) if k not in session_kernel["baseline"]]
+    if extras: await ks.exec("\n".join(f"globals().pop({n!r}, None)" for n in extras))

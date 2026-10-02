@@ -1,6 +1,7 @@
 "The shell layer over the gateway: a persistent bash/zsh as a rustygate terminal, sentinel boundaries, emulator-cleaned residue."
-import asyncio, pyghostty
-from ipyai.shell import GateShell
+import asyncio, os, pyghostty
+from pathlib import Path
+from ipyai.shell import GateShell, Framer
 
 
 async def _boot(url, sh='bash', size=(80, 24), cwd=None):
@@ -37,6 +38,29 @@ async def _shell_roundtrip(url, sh):
 
 async def test_shell_bash(gateway): await _shell_roundtrip(gateway, 'bash')
 async def test_shell_zsh(gateway): await _shell_roundtrip(gateway, 'zsh')
+
+
+def test_framer_splits_at_sentinels():
+    "Sentinels are found however the stream is split, with a long $PWD, and every byte around them reaches the output."
+    pwd = '/tmp/' + 'd' * 150
+    s = b'out\x1b[31mred\x1b]7770;2;' + pwd.encode() + b'\x07after'
+    for n in (1, 3, 7, len(s)):
+        f, got = Framer(), []
+        for i in range(0, len(s), n): got += f.feed(s[i:i + n])
+        assert b''.join(x for x in got if isinstance(x, bytes)) == b'out\x1b[31mredafter'
+        assert [x for x in got if isinstance(x, tuple)] == [(2, pwd)]
+    f = Framer()
+    assert f.feed(b'tail\x1b]77') == [b'tail'] and f.flush() == b'\x1b]77'   # held while it could begin a sentinel
+
+
+async def test_long_pwd(gateway, tmp_path):
+    "A $PWD far longer than the old 64-byte holdback still ends the command, and reports the right directory."
+    d = Path(os.path.realpath(tmp_path))/('d' * 100)/('e' * 100)
+    d.mkdir(parents=True)
+    s = await _boot(gateway)
+    res, _ = await _run(s, f'cd {d}')
+    assert res == ('prompt', 0, str(d))
+    await _quit(s)
 
 
 async def test_shell_own_job_control(gateway):

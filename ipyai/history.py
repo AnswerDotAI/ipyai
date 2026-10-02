@@ -23,10 +23,11 @@ class History:
         return None if sh else m.content
 
     def refresh(self):
-        "Reload newest-first unique items from the newest `nfiles` session files."
+        "Reload newest-first unique items from the newest `nfiles` session files, ending any navigation in progress."
         files = sorted(self.dir.glob('*.ipynb'), key=os.path.getmtime, reverse=True) if self.dir.exists() else []
         seen, fresh = set(), []
         for p in files[:self.nfiles]:
+            if len(fresh) >= self.recent: break
             dlg = read_ipynb(p)
             if dlg is None: continue
             for m in reversed(dlg.messages):
@@ -34,7 +35,7 @@ class History:
                     seen.add(s)
                     fresh.append(s)
                 if len(fresh) >= self.recent: break
-        self.items = fresh
+        self.items, self.pos = fresh, None
 
     def add_local(self, source):
         "Prepend a just-submitted line immediately: cheaper than a re-read, and correct before any save lands."

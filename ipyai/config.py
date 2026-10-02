@@ -35,14 +35,14 @@ def _default_config():
                 code_theme=DEFAULT_CODE_THEME, prompt_mode=DEFAULT_PROMPT_MODE)
 
 def load_config(path=None):
-    "Effective config dict: file over defaults; models are flat vendor-prefixed strings like 'codex/gpt-5.4'."
+    "Effective config dict: file over defaults, and `IPYAI_MODEL` over both for the model. Models are flat vendor-prefixed strings like 'codex/gpt-5.4'."
     path = Path(path or CONFIG_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {}
     if path.exists(): data = json.loads(path.read_text())
     else: path.write_text(json.dumps(_default_config(), indent=2) + '\n')
     cfg = _default_config() | {k: v for k, v in data.items() if k in _default_config()}
-    cfg['model'] = str(cfg['model'] or os.environ.get('IPYAI_MODEL', '') or DEFAULT_MODEL).strip()
+    cfg['model'] = str(os.environ.get('IPYAI_MODEL') or cfg['model'] or DEFAULT_MODEL).strip()
     cfg['suggest_model'] = str(cfg['suggest_model'] or DEFAULT_SUGGEST_MODEL).strip()
     cfg['think'] = str(cfg['think'] or DEFAULT_THINK).strip().lower()
     cfg['code_theme'] = str(cfg['code_theme']).strip() or DEFAULT_CODE_THEME

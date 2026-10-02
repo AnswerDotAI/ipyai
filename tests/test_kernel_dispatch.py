@@ -1,58 +1,33 @@
-"Uses the session kernel fixture. Verifies tool-bridge dispatch and variable-ref reads."
-import pytest
+"Uses the session kernel fixture. Verifies tool dispatch through `KernelTools`."
+import asyncio, pytest
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")  # the session_kernel fixture's objects live on the session loop
 
 
-async def test_bridge_runspython_and_reads_vars(kernel_bridge):
-    await kernel_bridge._exec("x = 41\ny = x + 1")
-
-    val = await kernel_bridge.read_var("y")
-    assert val == 42
-
-    vals = await kernel_bridge.client.get_vars(vs=["x", "y"])
-    assert vals == {"x": 41, "y": 42}
-
-    names = await kernel_bridge.available_names(force=True)
-    assert "py" in names, f"py missing from {names}"
-
-    result = await kernel_bridge.call_tool("py", dict(code="2 + 3"))
-    assert "5" in result
-
-    bash_res = await kernel_bridge.call_tool("bash", dict(cmd="printf 'x\\n'", as_dict=True))
-    assert "x" in bash_res, f"bool tool arg should be marshalled to Python True: {bash_res!r}"
-
-    schemas = await kernel_bridge.schemas()
-    py_schema = next(s for s in schemas if s["function"]["name"] == "py")
-    assert "parameters" in py_schema["function"]
+async def test_names_schemas_and_calls(kernel_tools):
+    names = await kernel_tools.names()
+    assert names[0] == 'py' and 'bash' in names, names
+    assert '5' in await kernel_tools.call('py', code='2 + 3')
+    res = await kernel_tools.call('bash', cmd="printf 'x\\n'", as_dict=True)
+    assert 'x' in res, f"bool tool arg should be marshalled to Python True: {res!r}"
+    schemas = await kernel_tools.schemas(names)
+    py_schema = next(s for s in schemas if s['function']['name'] == 'py')
+    assert 'code' in py_schema['function']['parameters']['properties']
+    assert any(s['function']['name'] == 'bash' for s in schemas)
 
 
-async def test_call_tool_uses_longer_timeout_than_probe_exec(kernel_bridge, monkeypatch):
-    "Tool calls can legitimately run longer than the probe/exec default — `call_tool` must use a tool-specific timeout so a slow tool does not trip `_EXEC_TIMEOUT`."
-    import ipyai.kernel_bridge as kb
-    monkeypatch.setattr(kb, "_EXEC_TIMEOUT", 0.3)
-    monkeypatch.setattr(kb, "CUSTOM_TOOL_NAMES", tuple(list(kb.CUSTOM_TOOL_NAMES) + ["slow_tool"]))
-
-    await kernel_bridge._exec("import time\ndef slow_tool(): time.sleep(1.2); return 'done'\n", timeout=5)
-    await kernel_bridge.available_names(force=True)
-    res = await kernel_bridge.call_tool("slow_tool", {})
-    assert res == "done", f"slow tool should complete; got {res!r}"
+async def test_concurrent_tool_results_stay_apart(session_kernel, kernel_tools):
+    "Tool calls running at the same time each get their own result: no shared kernel variable carries them."
+    await session_kernel['ks'].exec("import time\ndef slow_echo(x): time.sleep(0.2); return x")
+    res = await asyncio.wait_for(asyncio.gather(*(kernel_tools.call('slow_echo', x=f'v{i}') for i in range(4))), 20)
+    assert res == ['v0', 'v1', 'v2', 'v3']
 
 
-async def test_bridge_preserves_full_response_from_kernel_tool(kernel_bridge, monkeypatch):
-    "A kernel-side tool that opts out of truncation with `FullResponse` must have its type preserved across the bridge, so downstream truncation skips it."
-    import ipyai.kernel_bridge as kb
+async def test_full_response_survives(session_kernel, kernel_tools):
+    "A kernel-side tool that opts out of truncation with `FullResponse` keeps that type, so downstream truncation skips it."
     from aidialog.msg_parts import FullResponse
-    monkeypatch.setattr(kb, "CUSTOM_TOOL_NAMES", tuple(list(kb.CUSTOM_TOOL_NAMES) + ["notebook_xml"]))
-
     payload = "<ipynb>" + ("x" * 5000) + "</ipynb>"
-    await kernel_bridge._exec(
-        "from aidialog.msg_parts import FullResponse\n"
-        f"def notebook_xml(): return FullResponse({payload!r})\n")
-    names = await kernel_bridge.available_names(force=True)
-    assert "notebook_xml" in names, f"monkeypatch should expose notebook_xml: {names}"
-
-    res = await kernel_bridge.call_tool("notebook_xml", {})
-
-    assert isinstance(res, FullResponse), f"FullResponse type must survive the kernel bridge, got {type(res).__name__}"
+    await session_kernel['ks'].exec(f"from aidialog.msg_parts import FullResponse\ndef notebook_xml(): return FullResponse({payload!r})")
+    res = await kernel_tools.call('notebook_xml')
+    assert isinstance(res, FullResponse), f"FullResponse type must survive the call, got {type(res).__name__}"
     assert str(res) == payload

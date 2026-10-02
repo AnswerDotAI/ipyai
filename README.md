@@ -140,6 +140,8 @@ Configuration files are under `XDG_CONFIG_HOME/ipyai/`. Edit `sysp.txt` to chang
 
 Every key is also a CLI flag for one launch. For example, `ipyai --model anthropic/claude-sonnet-4-6 --think h` selects a model and think effort. `--think` accepts `l`, `m`, `h`, or `x`. Run `ipyai --help` for the full list of flags.
 
+When the `IPYAI_MODEL` environment variable is set, it chooses the model, overriding `config.json`. A `--model` flag overrides both.
+
 Put imports and aliases for new sessions in an optional `startup.py` in the same directory. ipyai runs it when initializing each kernel it owns, with `__file__` bound. This follows clikernel's `~/.config/clikernel/startup.py` behaviour. An error in the file stops the launch and reports the filename. Attached kernels (`-k`) do not run it.
 
 ## Development

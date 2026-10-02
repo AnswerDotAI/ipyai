@@ -1,43 +1,35 @@
-"Gateway kernel lifecycle: spawn an owned kernel, seed with skip semantics, pump cell-tagged traffic, shut down on close."
+"Gateway kernel lifecycle: spawn an owned kernel, set it up, route every message through `on_jmsg`, shut down on close."
 import asyncio
 from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
 from ipyai.kernel import KernelSession
-from ipyai.kernel_bridge import CUSTOM_TOOL_NAMES, KernelBridge
+from ipyai.tools import KernelTools
 
 
-async def test_spawn_seed_pump_shutdown(gateway):
+async def _until(pred, timeout=10):
+    for _ in range(int(timeout / 0.05)):
+        if pred(): return
+        await asyncio.sleep(0.05)
+    raise TimeoutError('condition did not settle')
+
+
+async def test_spawn_setup_route_shutdown(gateway):
     ks = await KernelSession(url=gateway).start()
     assert ks.owned
-    bridge = KernelBridge(ks.kc)
-    await bridge._exec("def bash(**kw): return 'sentinel-preseeded'")
-    present = set(await bridge.present_names(CUSTOM_TOOL_NAMES))
-    assert 'bash' in present, "preseeded callable should count as present"
-    await bridge.seed_tools(skip=present)
-    res = await bridge.call_tool('bash', {})
-    assert 'sentinel-preseeded' in res, f"seed_tools with skip should have preserved preseeded bash; got {res!r}"
-    await bridge._exec("globals().pop('bash', None)")
-    await bridge.seed_tools(skip=set(await bridge.present_names(CUSTOM_TOOL_NAMES)))
-    names = set(await bridge.available_names(force=True))
-    assert 'bash' in names, "after removing preseed and re-seeding, real bash should land"
+    await ks.exec("def bash(**kw): return 'sentinel-preseeded'")
+    await ks.setup()   # a tool the kernel already defines is left alone
+    assert 'sentinel-preseeded' in await KernelTools(ks.kc).call('bash')
 
-    # the session pump: `{cell_id}.{token}` traffic reaches on_cell_msg; the bridge plumbing above never does
     got = []
-    ks.on_cell_msg = lambda cid, m: got.append((cid, m['msg_type']))
-    ks.kc.execute("print('tagged'); 6*7", msg_id='cellA.abc123')
-    for _ in range(100):
-        if any(mt == 'execute_result' for _, mt in got): break
-        await asyncio.sleep(0.05)
-    types = [mt for cid, mt in got if cid == 'cellA']
-    assert {'stream', 'execute_input', 'execute_result'} <= set(types), f'cell traffic not routed: {got}'
-    assert all(cid == 'cellA' for cid, mt in got), f'untagged traffic leaked: {got}'
-    outs = [o async for o in ks.run_cell('cellB', "'mine'")]   # a live tagged cell, streamed
-    assert 'mine' in str(outs)
-    assert {cid for cid, mt in got} == {'cellA', 'cellB'}, f'unexpected cell ids: {got}'
+    ks.on_jmsg = lambda m: got.append((m.get('parent_header', {}).get('msg_id'), m['msg_type']))
+    ks.kc.execute("print('tagged'); 6*7", msg_id='cellA.abc123')   # nobody awaits this request
+    await _until(lambda: ('cellA.abc123', 'execute_result') in got)
+    assert {'stream', 'execute_input', 'execute_result'} <= {mt for pid, mt in got if pid == 'cellA.abc123'}
+    await ks.kc.reply("'mine'", msg_id='cellB.abc123')                # a request a run() owns reaches on_jmsg too, once
+    assert [mt for pid, mt in got if pid == 'cellB.abc123'].count('execute_result') == 1
 
-    async def answer(prompt, password): return 'blue'   # the app's handler shape (cli._on_stdin)
-    ks.on_stdin = answer
-    outs = [o async for o in ks.run_cell('cellC', "print('got', input('fav? '))")]
-    assert 'got blue' in str(outs), f'stdin round trip failed: {outs}'
+    async def answer(jmsg): return 'blue'
+    await ks.kc.reply("print('got', input('fav? '))", msg_id='cellC.abc123', on_stdin=answer)
+    assert ('cellC.abc123', 'stream') in got
 
     kid = ks.kid
     await ks.close()

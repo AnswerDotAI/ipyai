@@ -34,7 +34,7 @@ async def _until(pred, timeout=25):
         await asyncio.sleep(0.05)
     raise TimeoutError('condition did not settle')
 
-def _outs(app): return [b for b in app.comp.blocks.values() if b.tag == 'out']
+def _outs(app): return [b for k, b in app.comp.blocks.items() if ':out' in k]
 
 async def test_shell_end_to_end():
     "A `!` submission runs in the persistent shell under a borrow: raw bytes on glass, residue as a model-only block, prompt back."
@@ -47,7 +47,7 @@ async def test_shell_end_to_end():
         assert 'hello from job' in tty.term.text()      # streamed raw during the borrow
         blk = _outs(app)[0]
         assert blk.committed and 'hello from job' in str(blk.body[0])
-        assert app.shell is not None and app.fg_job is None
+        assert app.ctl.shell is not None and app.ctl.fg is None
         assert '»»»' in tty.term.text()                 # tail repainted after reanchor
 
 @pytest.mark.slow
@@ -61,9 +61,9 @@ async def test_shell_state_persists_and_cwd_syncs():
         async with app.k:
             app.paint()
             app.comp.on_bytes(f'!cd {tmp} && export TP_T=42\r'.encode())
-            await _until(lambda: app.shell_pwd == tmp)
+            await _until(lambda: not app.busy and app.ctl.shell_pwd == tmp)
             app.comp.on_bytes(b'!echo $TP_T in $PWD\r')
-            await _until(lambda: any(f'42 in {tmp}' in (b.source or '') for b in _outs(app)))
+            await _until(lambda: not app.busy and any(f'42 in {tmp}' in (b.source or '') for b in _outs(app)))
             app.comp.on_bytes(b'import os; print(os.getcwd())\r')     # the kernel followed the shell's cd
             await _until(lambda: tmp in tty.term.contents())
 
@@ -74,10 +74,10 @@ async def test_embedded_bang_stays_kernel():
     async with app.k:
         app.paint()
         app.comp.on_bytes(b'x = !echo kernelside\r')
-        await _until(lambda: not app.k.busy and not app.buf.text)
+        await _until(lambda: not app.busy and not app.buf.text)
         app.comp.on_bytes(b'x\r')
         await _until(lambda: 'kernelside' in tty.term.contents())
-        assert app.shell is None
+        assert app.ctl.shell is None
 
 async def test_shell_exit_code_and_respawn():
     "A failing command reports its exit; `exit` kills the shell and the next submission gets a fresh one."
@@ -86,13 +86,13 @@ async def test_shell_exit_code_and_respawn():
     async with app.k:
         app.paint()
         app.comp.on_bytes(b'!false\r')
-        await _until(lambda: 'exit 1' in tty.term.contents())
-        first = app.shell.tc.name
+        await _until(lambda: not app.busy and 'exit 1' in tty.term.contents())
+        first = app.ctl.shell.tc.name
         app.comp.on_bytes(b'!exit\r')
-        await _until(lambda: app.shell is None)
+        await _until(lambda: not app.busy and app.ctl.shell is None)
         app.comp.on_bytes(b'!echo back up\r')
         await _until(lambda: any('back up' in (b.source or '') for b in _outs(app)))
-        assert app.shell.tc.name != first
+        assert app.ctl.shell.tc.name != first
 
 async def test_bg_job_and_quit_gate():
     "`&` backgrounds inside the shell; C-D warns once while a shell exists, an immediate second C-D quits."
@@ -101,13 +101,13 @@ async def test_bg_job_and_quit_gate():
     async with app.k:
         app.paint()
         app.comp.on_bytes(b'!sleep 30 &\r')
-        await _until(lambda: app.fg_job is None and app.shell is not None)
+        await _until(lambda: app.ctl.fg is None and app.ctl.shell is not None)
         app.comp.on_bytes(b'\x04')                       # C-D: gated
         await _until(lambda: any('C-D again' in (b.source or str(b.body[:1])) for b in app.comp.blocks.values()))
         assert not app.done.is_set()
         app.comp.on_bytes(b'\x04')                       # immediate second: quits; teardown closes the terminal
         await _until(lambda: app.done.is_set())
-        await app.shell.close()                        # in the app, main()'s teardown does this
+        await app.ctl.shell.close()                        # in the app, main()'s teardown does this
 
 async def test_stop_and_resume():
     "ctrl-Z stops the child (the shell's prompt is the boundary); `!fg` resumes it; ctrl-C ends it."
@@ -116,13 +116,13 @@ async def test_stop_and_resume():
     async with app.k:
         app.paint()
         app.comp.on_bytes(b"!sh -c 'echo go; exec sleep 30'\r")
-        await _until(lambda: app.fg_job is not None and 'go' in app.fg_job[1].contents())  # the child printed: it exists and owns the terminal, so ^Z cannot land on bash instead
-        app.shell.write(b'\x1a')           # ^Z via the pty line discipline
-        await _until(lambda: app.fg_job is None)         # the stop bounced us back to the prompt
+        await _until(lambda: app.ctl.fg is not None and 'go' in app.ctl.fg[1].contents())  # the child printed: it exists and owns the terminal, so ^Z cannot land on bash instead
+        app.ctl.shell.write(b'\x1a')           # ^Z via the pty line discipline
+        await _until(lambda: not app.busy and app.ctl.fg is None)         # the stop bounced us back to the prompt
         app.comp.on_bytes(b'!fg\r')
-        await _until(lambda: app.fg_job is not None and 'sleep' in app.fg_job[1].contents())  # fg reported the job: it has been resumed into the foreground
-        app.shell.write(b'\x03')           # ^C the resumed child
-        await _until(lambda: app.fg_job is None)
+        await _until(lambda: app.ctl.fg is not None and 'sleep' in app.ctl.fg[1].contents())  # fg reported the job: it has been resumed into the foreground
+        app.ctl.shell.write(b'\x03')           # ^C the resumed child
+        await _until(lambda: app.ctl.fg is None)
 
 async def test_f2_editor_roundtrip(monkeypatch, tmp_path):
     "F2 hands the composer to $EDITOR through the shell borrow, reloads on clean exit, records nothing."
@@ -138,7 +138,7 @@ async def test_f2_editor_roundtrip(monkeypatch, tmp_path):
         await app.edit_buffer()
         assert app.buf.text == 'x = 99'                    # the editor's result landed in the composer
         assert app.buf.cursor == len('x = 99')
-        assert not [b for b in app.comp.blocks.values() if b.tag in ('sh', 'out')]  # no transcript record
+        assert not app.ctl.dlg.messages and not app.comp.blocks  # no transcript record
 
 async def test_f2_abandon_on_nonzero_exit(monkeypatch, tmp_path):
     "A nonzero editor exit (vim's :cq) leaves the composer untouched."

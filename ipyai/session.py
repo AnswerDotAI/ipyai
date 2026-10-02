@@ -1,24 +1,21 @@
-"Session persistence: each session is one Dialog .ipynb under `./.ipyai/sessions/`."
+"Session files: each session is one Dialog .ipynb under `./.ipyai/sessions/`, saved to its `path_`."
 import os, uuid
 from pathlib import Path
-from aidialog.ipynb import read_ipynb, write_ipynb
+from aidialog.ipynb import read_ipynb
 
 def sessions_dir(root='.'): return Path(root)/'.ipyai'/'sessions'
 
-class Session:
-    "One session file: the Dialog in memory is the model, this file its only projection (saved whole on every event)."
-    def __init__(self, root='.', path=None):
-        d = sessions_dir(root)
-        d.mkdir(parents=True, exist_ok=True)
-        gi = d.parent/'.gitignore'
-        if not gi.exists(): gi.write_text('*\n')   # self-excluding, pytest-cache style
-        self.dir = d
-        self.path = Path(path) if path else d/f'{uuid.uuid4().hex}.ipynb'
+def new_session_path(root='.'):
+    "A fresh session file path under `root`. Nothing is created until `save_session` writes it."
+    return sessions_dir(root)/f'{uuid.uuid4().hex}.ipynb'
 
-    def save(self, dlg, **meta):
-        "Write `dlg` whole (`write_ipynb` is atomic); `meta` (kernel_id, model, think) rides in the notebook metadata."
-        if meta: dlg.meta = {**dlg.meta, 'ipyai': {**dlg.meta.get('ipyai', {}), **meta}}
-        write_ipynb(dlg, self.path)
+def save_session(dlg):
+    "Write `dlg` whole and atomically to its `path_`, first creating its directory and a self-ignoring `.gitignore` beside it (pytest-cache style)."
+    d = Path(dlg.path_).parent
+    d.mkdir(parents=True, exist_ok=True)
+    gi = d.parent/'.gitignore'
+    if not gi.exists(): gi.write_text('*\n')
+    dlg.save()
 
 def list_sessions(root='.'):
     "Session files newest first: (path, mtime, n_prompts, first prompt)."

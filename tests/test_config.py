@@ -18,6 +18,15 @@ def test_file_overrides(tmp_path):
     assert cfg['suggest_model'] == DEFAULT_SUGGEST_MODEL
     assert 'backend' not in cfg                    # pre-flat nested keys are ignored
 
+def test_model_env_overrides_file(tmp_path, monkeypatch):
+    "IPYAI_MODEL, when set, chooses the model over both config.json and the default."
+    p = tmp_path/'config.json'
+    p.write_text(json.dumps(dict(model='anthropic/claude-sonnet-4-6')))
+    monkeypatch.setenv('IPYAI_MODEL', 'codex/gpt-x')
+    assert load_config(p)['model'] == 'codex/gpt-x'
+    monkeypatch.setenv('IPYAI_MODEL', '')
+    assert load_config(p)['model'] == 'anthropic/claude-sonnet-4-6'   # empty counts as unset
+
 def test_render_sp():
     s = render_sp('I am {model}; today is {today}.', 'gpt-x')
     assert 'gpt-x' in s and '{' not in s                        # placeholders filled
