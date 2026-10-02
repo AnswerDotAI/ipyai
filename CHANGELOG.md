@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.7
+
+### New Features
+
+- Restructure ipyai around a Controller that owns the session Dialog and a View that syncs Messages to keyed blocks ([#37](https://github.com/AnswerDotAI/ipyai/issues/37))
+
+
 ## 0.1.6
 
 ### New Features
