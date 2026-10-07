@@ -31,8 +31,7 @@ include = ["ipyai*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = ["slow: spawns a real shell pty and waits on timing; unreliable in sandboxed environments; deselected by default"]
 filterwarnings = ["ignore::DeprecationWarning:pty", "ignore:Pydantic serializer warnings:UserWarning"]
-addopts = "-n 4 --dist loadfile -m 'not slow'"
+addopts = "-n 4 --dist loadfile"
 
 [tool.fastship]

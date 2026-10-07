@@ -1,75 +1,60 @@
-import os, tempfile
-
+import asyncio, os, tempfile, shutil
 import pytest, pytest_asyncio
-
+from teleprint.testing import EmuTty
+from ipyai.cli import App
+from ipyai.kernel import KernelSession
+from ipyai.assistant import Assistant
 import ipyai.config as config
-
-
-_IPYTHONDIR_SESSION = None
-
+from .helpers import ScriptedModel
 
 def pytest_configure(config):
-    "Redirect IPYTHONDIR for the whole test session so no test run pollutes the user's real ~/.ipython."
-    global _IPYTHONDIR_SESSION
-    _IPYTHONDIR_SESSION = tempfile.mkdtemp(prefix="ipyai-test-ipy-")
-    os.environ["IPYTHONDIR"] = _IPYTHONDIR_SESSION
-
+    config.ipyai_ipython_dir = tempfile.mkdtemp(prefix='ipyai-test-ipy-')
+    config.ipyai_old_ipython_dir = os.environ.get('IPYTHONDIR')
+    os.environ['IPYTHONDIR'] = config.ipyai_ipython_dir
 
 def pytest_unconfigure(config):
-    import shutil
-    if _IPYTHONDIR_SESSION: shutil.rmtree(_IPYTHONDIR_SESSION, ignore_errors=True)
-
+    shutil.rmtree(config.ipyai_ipython_dir)
+    if config.ipyai_old_ipython_dir is None: os.environ.pop('IPYTHONDIR', None)
+    else: os.environ['IPYTHONDIR'] = config.ipyai_old_ipython_dir
 
 @pytest.fixture(autouse=True)
-def temp_config_paths(tmp_path, monkeypatch):
-    "Isolate tests from the user's setup: their config files and `IPYAI_MODEL` never apply, and each test runs in its own directory, so no session files are left behind."
-    cfg = tmp_path/"config"
-    cfg.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(config, "CONFIG_DIR", cfg)
-    monkeypatch.setattr(config, "CONFIG_PATH", cfg/"config.json")
-    monkeypatch.setattr(config, "SYSP_PATH", cfg/"sysp.txt")
-    monkeypatch.setattr(config, "STARTUP_PATH", cfg/"startup.py")
+def isolated_config(tmp_path, monkeypatch):
+    cfg = tmp_path/'config'
+    monkeypatch.setattr(config, 'CONFIG_DIR', cfg)
+    for name, filename in [('CONFIG_PATH', 'config.json'), ('SYSP_PATH', 'sysp.txt'), ('STARTUP_PATH', 'startup.py')]:
+        monkeypatch.setattr(config, name, cfg/filename)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv('IPYAI_MODEL', raising=False)
-    yield
 
-
-_USER_NAMES = "[k for k in globals() if not k.startswith('_')]"
-
-
-@pytest.fixture(scope="session")
+@pytest.fixture(scope='session')
 def gateway():
-    "A rustygate subprocess for the whole test session (the jupyasyncclient test pattern)."
     from rustygate.tools import start_gateway
-    g = start_gateway()   # free port per xdist worker
-    yield g.url
-    g.stop()
+    g = start_gateway()
+    try: yield g.url
+    finally: g.stop()
 
+@pytest_asyncio.fixture
+async def repl(gateway):
+    with EmuTty(60, 16, bg=(0xfa, 0xfa, 0xf4)) as tty:
+        tty.write(b'$ ipyai\r\n')
+        async with KernelSession(url=gateway) as k:
+            await k.setup()
+            app = App(tty, kernel=k, history=None)
+            await app.comp.start()
+            app.comp.on_resize = app._resized
+            app.paint()
+            try: yield app
+            finally:
+                if op := app.ctl.op:
+                    app.ctl.cancel()
+                    await asyncio.gather(op.task, return_exceptions=True)
+                await app.ctl.close()
+                await asyncio.sleep(0)
+                app.comp.stop()
 
-@pytest.fixture(scope="session", autouse=True)
-def _gateway_env(gateway):
-    "Point every bare KernelSession() at the test gateway: no test may ever touch a live gateway."
-    os.environ['IPYAI_GATEWAY'] = gateway
-    yield
-    os.environ.pop('IPYAI_GATEWAY', None)
-
-
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def session_kernel(gateway):
-    "One kernel, set up as the app sets up an owned kernel, for the whole session, on pytest-asyncio's session loop."
-    from ipyai.kernel import KernelSession
-    ks = await KernelSession(url=gateway).start()
-    await ks.setup()
-    baseline = set(await ks.kc.eval(_USER_NAMES, call_=False) or [])
-    yield dict(ks=ks, baseline=baseline)
-    await ks.close()
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def kernel_tools(session_kernel):
-    "`KernelTools` over the session kernel; teardown clears any user_ns names the test added."
-    from ipyai.tools import KernelTools
-    ks = session_kernel["ks"]
-    yield KernelTools(ks.kc)
-    extras = [k for k in (await ks.kc.eval(_USER_NAMES, call_=False) or []) if k not in session_kernel["baseline"]]
-    if extras: await ks.exec("\n".join(f"globals().pop({n!r}, None)" for n in extras))
+@pytest.fixture
+def conversation(repl):
+    model = ScriptedModel()
+    cfg = dict(model='m', suggest_model='cm', think='l', code_theme='ansi_dark', prompt_mode=False)
+    repl.ctl.assistant = Assistant(cfg=cfg, chat_factory=model, sp='sp')
+    return repl, model
