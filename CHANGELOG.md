@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.8
+
+### New Features
+
+- Switch AI turns and tools to aihist build/Reply and kernel schemas/call ops; drop ! prompt refs ([#38](https://github.com/AnswerDotAI/ipyai/issues/38))
+
+
 ## 0.1.7
 
 ### New Features
@@ -20,7 +27,7 @@
 
 ### New Features
 
-- run_cell is now an async generator, and bridge reads no longer jump the kernel queue ([#34](https://github.com/AnswerDotAI/ipyai/pull/34)), thanks to [@jph00](https://github.com/jph00)
+- `run_cell` is now an async generator, and bridge reads no longer jump the kernel queue ([#34](https://github.com/AnswerDotAI/ipyai/pull/34)), thanks to [@jph00](https://github.com/jph00)
 
 
 ## 0.1.4
