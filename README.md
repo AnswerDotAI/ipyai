@@ -34,7 +34,7 @@ A prefix overrides the mode for one submission. Use `.` for an AI prompt, `;` fo
 
 Each AI turn receives the session so far, including executed cells and their outputs, notes, shell commands, and previous prompts and replies.
 
-Inside a prompt, `` $`name` `` includes a live variable's value. `` !`cmd` `` includes a shell command's output. These embedded commands run through the kernel, as `!` does in code. They do not use the persistent shell.
+Inside a prompt, `` $`name` `` includes a live variable's value.
 
 Lines starting with `%` go to the kernel in every mode. This includes `%ipyai ...` commands.
 

@@ -14,7 +14,6 @@ from teleprint.compositor import Compositor
 from teleprint.tty import RealTty
 from teleprint.widgets import CompletionMenu, Tooltip, Signature
 from teleprint.transcript import TranscriptView
-import aidialog.ipynb  # noqa: F401 -- activates the Message.cell_meta/to_cell patches (meta_attrs serialization)
 from aidialog.ipynb import read_ipynb, write_ipynb
 from .kernel import KernelSession
 from .history import History
@@ -22,7 +21,7 @@ from .session import list_sessions, resolve_session
 from .assistant import Assistant, route, code_blocks
 from .config import load_config
 from .controller import Controller
-from .view import View, gutter, hl, msg_id
+from .view import View, hl, msg_id
 
 HINT = 'ipyai ng⋄Enter runs; Tab completes; S-Tab inspects; C-T transcript; C-C interrupts; M-p mode; C-D quits'  # S/C/M = shift/ctrl/alt
 OSC_BG_RE = re.compile(rb'\x1b\]11;rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)')
@@ -333,17 +332,16 @@ class App:
         self.paint()
 
     async def do_inspect(self):
-        """shift+Tab: inside a call, a Signature panel with the active param bold (the kernel's `sig_help`
-        computes the signature and active index); otherwise the full inspect text as a tooltip."""
+        """shift+Tab: inside a call, a Signature panel with the active param bold; otherwise the full inspect text as a tooltip.
+        One `inspect_request` gives both: ipymini adds its signature help to the reply as `application/json`."""
         snap = (self.buf.text, self.buf.cursor)
-        lines = self.buf.text[:self.buf.cursor].split('\n')
-        try: sigs = await self.k.kc.sig_help(code=self.buf.text, line_no=len(lines), col_no=len(lines[-1]))
-        except Exception: sigs = []
+        c = (await self.k.kc.shell('inspect_request', code=self.buf.text, cursor_pos=self.buf.cursor, detail_level=0))['content']
+        data = c.get('data', {}) if c.get('found') else {}
         tip = None
-        if sigs and isinstance(sigs, list):
+        if sigs := data.get('application/json'):
             s = sigs[0]
             tip = Signature(s['label'], [p['desc'] for p in s['params']], s.get('idx'), s.get('doc', ''))
-        elif text := await self.k.kc.inspect(self.buf.text, self.buf.cursor): tip = Tooltip(Text.from_ansi(text))
+        elif text := data.get('text/plain'): tip = Tooltip(Text.from_ansi(text))
         if (self.buf.text, self.buf.cursor) != snap: return
         self.menu, self.tip = None, tip
         self.paint()

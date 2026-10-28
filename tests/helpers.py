@@ -1,14 +1,18 @@
 import asyncio
 from collections import deque
-from aidialog.msg_parts import Text
+from aidialog.msg_parts import Msg, Text
 
 async def until(pred, timeout=25):
     async with asyncio.timeout(timeout):
-        while not pred(): await asyncio.sleep(0.02)
+        while not pred(): await asyncio.sleep(0.005)
+
+async def keys(app, data):
+    app.comp.on_bytes(data)
+    await until(lambda: not app.busy and app._pending is None)
 
 async def send(app, text):
-    app.comp.on_bytes(b'\x1b[200~' + text.encode() + b'\x1b[201~\r')
-    await until(lambda: not app.busy and app._pending is None and not app.buf.text)
+    await keys(app, b'\x1b[200~' + text.encode() + b'\x1b[201~\r')
+    await until(lambda: not app.buf.text)
 
 class ScriptedModel:
     "Script model streams/final replies, leaving the app, kernel, dialog and terminal real."
@@ -28,4 +32,4 @@ class ScriptedChat:
                 yield event
             if gate is not None: await gate.wait()
         return stream()
-    def full(self, **kwargs): return self.reply
+    def reply_msgs(self): return [Msg('assistant', [Text(self.reply)])]

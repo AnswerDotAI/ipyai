@@ -7,9 +7,11 @@ The controller imports no terminal code. It reaches the screen through `ui`, whi
 `drop`, `reset`, `note`, `borrow`, `ask_input`, `restore_input`, `paint` and `size`."""
 import asyncio, os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import pyghostty
 from aidialog.dialog import Dialog, Message, INTERRUPTED, mk_stream
+from aihist import Reply, write_reply
 from aidialog.ipynb import read_ipynb
 from fastcore.utils import rtoken_hex
 from jupywire.ops import parent_id
@@ -41,6 +43,7 @@ class Controller:
         self.shell = self.shell_pwd = None
         self.fg = None             # (shell, mirror) while a shell command owns the terminal
         self.transient = {}        # id -> Message whose output shows but is not recorded (%ipyai cells)
+        self.times = {}            # id -> when a Message last ran or was added this session, as aihist's `build` takes them
         self._tools = self._drain = self._drain_mirror = self._pending_load = None
         self._bg = set()           # strong refs to fire-and-forget tasks
         k.on_jmsg = self.on_jmsg
@@ -99,8 +102,9 @@ class Controller:
 
     # -- operations ------------------------------------------------------------------
     def _start(self, kind, m, work):
-        "Run `work(op)` as the foreground operation."
+        "Run `work(op)` as the foreground operation, recording when its Message started."
         op = self.op = Op(kind, m)
+        if m is not None: self.times[m.id] = datetime.now().astimezone().isoformat(timespec='seconds')
         op.task = asyncio.create_task(self._run(op, work(op)), name=kind)
         self.ui.paint()
         return op
@@ -142,8 +146,7 @@ class Controller:
         self.ui.mark(m)
         return self._start('cell', m, lambda op: self._cell(op, src))
 
-    async def _cell(self, op, src):
-        await self.k.kc.reply(src, msg_id=f'{op.msg.id}.{rtoken_hex(4)}', on_stdin=self._stdin(op.msg))
+    async def _cell(self, op, src): await self.k.kc.reply(src, msg_id=f'{op.msg.id}.{rtoken_hex(4)}', on_stdin=self._stdin(op.msg))
 
     def _stdin(self, m):
         "A run's input handler: the ui asks, and the prompt and answer join the cell's output (a password answer never does)."
@@ -165,27 +168,29 @@ class Controller:
         return self._start('turn', m, lambda op: self._turn(op, text))
 
     async def _turn(self, op, text):
-        """Stream one turn into its prompt Message: the output holds `StreamAccum`'s formatted text while
-        it streams, and `chat.full()` when it completes. The session file is saved after each tool round."""
-        from fastllm.chat import StreamAccum, Refresh
-        m, a, kc = op.msg, self.assistant, self.k.kc
-        stream = acc = None
+        """Stream one turn into its prompt Message with aihist's `Reply`: the output holds the text streamed so far, with a
+        row for each running tool, and the completed history through the same writer when the turn ends. After each tool round, the session file is
+        saved with the reply so far in its stored form."""
+        from fastllm.chat import Refresh
+        m, a, kc, rep, shown = op.msg, self.assistant, self.k.kc, Reply(), ''
+        stream = None
         try:
-            i = next(j for j, x in enumerate(self.dlg.messages) if x is m)
-            chat, stream = await a.start_turn(self.dlg.messages[:i + 1], kc, self.tools)
-            acc = StreamAccum(chat)
+            chat, stream = await a.start_turn(self.dlg, m, self.tools, self.times)
             async for e in stream:
-                if acc(e):
+                if s := rep.add(e):
                     op.started = True
-                    m.output = acc.txt
+                    m.output = shown = shown + s
                     self.ui.mark(m, live=True)
-                if isinstance(e, Refresh): self.save()   # a tool round has finished
-            m.output = chat.full()
+                if isinstance(e, Refresh):   # a tool round has finished
+                    m.output = rep.finish()
+                    self.save()
+                    m.output = shown
+            m.output = write_reply(chat.reply_msgs())
             a.last_req_use = getattr(chat, 'last_req_use', None)
         except asyncio.CancelledError:
             if not op.cancelled_by_user: raise
-            self._end_turn(op, text, acc, INTERRUPTED)
-        except Exception as e: self._end_turn(op, text, acc, f'*[Response failed: {type(e).__name__}: {e}]*', e)
+            self._end_turn(op, text, rep, INTERRUPTED)
+        except Exception as e: self._end_turn(op, text, rep, f'*[Response failed: {type(e).__name__}: {e}]*', e)
         finally:
             if (aclose := getattr(stream, 'aclose', None)) is not None: await aclose()
             if op.msg is not None: self.ui.mark(m, live=False)
@@ -193,12 +198,12 @@ class Controller:
             try: kc.xpush(**{LAST_PROMPT: text, LAST_RESPONSE: m.ai_res})
             except Exception: pass
 
-    def _end_turn(self, op, text, acc, marker, err=None):
-        """Record a turn that ended early. One that produced output keeps it, followed by `marker`. One that
+    def _end_turn(self, op, text, rep, marker, err=None):
+        """Record a turn that ended early. One that produced output keeps its reply so far, followed by `marker`. One that
         produced nothing is removed, and its text goes back to the composer."""
         m = op.msg
         if op.started:
-            m.output = (acc.txt.rstrip() + '\n\n' if acc is not None and acc.txt.strip() else '') + marker
+            m.output = rep.finish(marker)
             return
         self.dlg.remove_msgs([m])
         self.ui.drop([m.id])

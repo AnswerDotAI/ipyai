@@ -1,10 +1,10 @@
-"""Kernel lifecycle over a rustygate gateway: one owned or attached kernel, its setup, and the one inbound message hook."""
+"Kernel lifecycle over a rustygate gateway: one owned or attached kernel, its setup, and the one inbound message hook."
 import os
 from contextlib import suppress
 from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
 from jupyasyncclient import JupyAsyncKernelClient
 from . import config
-from .tools import KernelTools, SEED_IMPORTS
+from .tools import SEED_IMPORTS
 
 DEFAULT_URL = 'http://127.0.0.1:8787'   # rustygate's default port; IPYAI_GATEWAY overrides
 kernel_env = dict(PYTHONSAFEPATH='1')
@@ -25,7 +25,7 @@ class KernelSession:
         self.on_jmsg = None
 
     async def start(self, kernel='', cwd=None, env=None):
-        """Create an owned kernel (closed on exit, with ipykernel_helper's REPL services loaded), or attach to
+        """Create an owned kernel (closed on exit), or attach to
         `kernel` by id prefix (taken as found: nothing loaded, never stopped by us). An unknown or ambiguous
         prefix raises `ValueError`. Owned kernels start in `cwd` (ours if None) with `env` laid over our environment."""
         self.mgr = JupyAsyncMultiKernelManager(self.url)
@@ -40,8 +40,6 @@ class KernelSession:
         else: self.kc = await JupyAsyncKernelClient.connect(self.url, cwd=str(cwd or os.getcwd()), env=dict(os.environ, **kernel_env, **(env or {})))
         self.kid, self.owned = self.kc.kernel_id, self.kc.owned
         self.kc.on_jmsg = self._on_jmsg
-        if self.owned:
-            with suppress(RuntimeError): await self.exec("get_ipython().extension_manager.load_extension('ipykernel_helper.core')", timeout=10)
         return self
 
     def _on_jmsg(self, jmsg):
@@ -60,7 +58,7 @@ class KernelSession:
         if config.STARTUP_PATH.exists():
             try: await self.exec(_startup_src(config.STARTUP_PATH), timeout=60)
             except RuntimeError as e: raise RuntimeError(f'{config.STARTUP_PATH}: {e}') from None
-        present = await KernelTools(self.kc).names()
+        present = await self.kc.eval("[n for n in %r if callable(globals().get(n))]" % list(SEED_IMPORTS), call_=False)
         for name, stmt in SEED_IMPORTS.items():
             if name in present: continue
             with suppress(RuntimeError): await self.exec(stmt)

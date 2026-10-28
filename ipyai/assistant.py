@@ -1,12 +1,12 @@
 """The assistant: mode routing, and the AI side of a turn.
 
-A turn's context comes from the session Dialog through `dlg2hist`, using only the messages the AI may
-see (`ai_msgs`). Every model is one fastllm `AsyncChat` built from a flat vendor-prefixed model string
-(e.g. 'codex/gpt-5.4'). The controller owns the Dialog and runs turns; this module builds them."""
+A turn's model input comes from the session Dialog through aihist's `build`, in the form Solveit's turns use. Every
+model is one fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4'). The
+controller owns the Dialog and runs turns; this module builds them."""
 import ast
-from aidialog.hist import dlg2hist, get_exprs, is_nameerr, vars_hist, warning_tag
 from aidialog.msg_parts import Text
-from fastcore.xml import to_xml
+from aihist import build, get_exprs, hist_xml
+from fastllm.responses import response_input
 from .config import load_config, load_sysp, SUGGEST_SP, render_sp
 
 LAST_PROMPT = '_ai_last_prompt'
@@ -60,7 +60,7 @@ class Assistant:
 
     @property
     def aim_info(self):
-        "Model capability dict for dlg2hist media handling; {} when the model is unknown to fastllm."
+        "Model capability dict for aihist's media handling; {} when the model is unknown to fastllm."
         try:
             from fastllm.types import get_model_info
             from fastllm.acomplete import split_vendor
@@ -83,40 +83,25 @@ class Assistant:
         return AsyncChat(model=model, sp=sp, tools=tools or None, hist=hist or None,
             ns=ns if ns is not None else {}, cache=(v == 'anthropic'))
 
-    async def vars_turn(self, msgs, kc=None):
-        """The synthetic variables turn plus any missing-var warning for `msgs`: `$` and `!` refs are
-        resolved in one kernel round trip (`!` via the kernel's own `getoutput`, keyed by full ref form)."""
-        names = get_exprs(msgs)
-        cmds = get_exprs(msgs, sigil='!')
-        cmd_exprs = {c: f'get_ipython().getoutput({c!r}).n' for c in cmds}
-        ns = {}
-        if kc is not None and (names or cmd_exprs): ns = await kc.eval_exprs(vs=names + list(cmd_exprs.values())) or {}
-        missing = sorted(v for v in names if is_nameerr(ns.get(v)))
-        ns = {v: ns[v] for v in names if v in ns and v not in missing} | {f'!`{c}`': ns[e] for c, e in cmd_exprs.items() if e in ns}
-        warn = warning_tag(f"The following symbols were referenced but aren't defined in the interpreter: {', '.join(missing)}." if missing else '')
-        return vars_hist(self.aim_info, ns), (to_xml(warn, do_escape=False) if warn else None)
-
-    async def start_turn(self, msgs, kc=None, tools=None):
-        """Build the context for a turn whose prompt is the last of `msgs`, and start its stream.
-        Only the messages the AI may see count. Returns `(chat, stream)`."""
+    async def start_turn(self, dlg, prompt, tools=None, times=None):
+        """Build the model input for prompt Message `prompt` of `dlg` with aihist's `build`, and start its stream. The `$`
+        values come from one `eval` operation, and `times` gives Messages' run times by id. Returns `(chat, stream)`."""
         from fastllm.acomplete import split_vendor
-        msgs = ai_msgs(msgs)
-        *hist, parts, _ = dlg2hist(msgs, self.aim_info)
-        vh, warn = await self.vars_turn(msgs, kc)
-        hist = vh + hist
-        if warn: parts.insert(0, warn)
-        names = await tools.names() if tools else []
-        if tools: tools.aim_info = self.aim_info
-        schemas = await tools.schemas(names) if tools else None
-        chat = self.make_chat(self.model, render_sp(self.sp, split_vendor(self.model)[1]), tools=schemas,
-            ns=tools.ns(names) if tools else {}, hist=hist)
-        return chat, await chat(parts, stream=True, think=self.think or None, max_steps=21)
+        msgs = dlg.messages[:next(i for i, m in enumerate(dlg.messages) if m is prompt) + 1]
+        names = get_exprs(ai_msgs(msgs))
+        recs = await tools.op_json(dict(eval=names)) if tools is not None and names else {}
+        sp, aim = render_sp(self.sp, split_vendor(self.model)[1]), self.aim_info
+        *hist, last = response_input(build(dlg, prompt.id, aim, vars=recs, instructions=sp, times=times or {}))[0]
+        if tools: tools.aim_info = aim
+        schemas = await tools.schemas() if tools else None
+        chat = self.make_chat(self.model, sp, tools=schemas, ns=tools.ns(schemas) if tools else {}, hist=hist)
+        return chat, await chat(last.content, stream=True, think=self.think or None, max_steps=21)
 
     async def suggest(self, msgs, prefix, suffix=''):
         "One inline suggestion for the composer: the messages since the last prompt, the split input, the small model."
         msgs = ai_msgs(msgs)
         i = max((j + 1 for j, m in enumerate(msgs) if m.msg_type == 'prompt'), default=0)
-        recent = '\n'.join(x for m in msgs[i:] if (x := m.hist_xml()))
+        recent = '\n'.join(x for m in msgs[i:] if (x := hist_xml(m)))
         parts = [recent, f'<current-input>\n<prefix>{prefix}</prefix>']
         if suffix.strip(): parts.append(f'<suffix>{suffix}</suffix>')
         parts += ['</current-input>', 'Return only the suggestion text to insert immediately after the prefix.']

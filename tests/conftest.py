@@ -38,7 +38,6 @@ async def repl(gateway):
     with EmuTty(60, 16, bg=(0xfa, 0xfa, 0xf4)) as tty:
         tty.write(b'$ ipyai\r\n')
         async with KernelSession(url=gateway) as k:
-            await k.setup()
             app = App(tty, kernel=k, history=None)
             await app.comp.start()
             app.comp.on_resize = app._resized

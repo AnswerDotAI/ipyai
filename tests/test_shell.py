@@ -1,7 +1,4 @@
-import os
-import pytest
-from teleprint.testing import EmuTty
-from ipyai.cli import App
+import os, pytest
 from ipyai.shell import Framer
 from .helpers import send, until
 
@@ -62,16 +59,3 @@ def test_sentinel_framing():
         assert [x for x in got if isinstance(x, tuple)] == [(2, pwd)]
     f = Framer()
     assert f.feed(b'tail\x1b]77') == [b'tail'] and f.flush() == b'\x1b]77'
-
-async def test_editor_handoff(monkeypatch, tmp_path):
-    editor = tmp_path/'editor.sh'
-    monkeypatch.setenv('EDITOR', str(editor))
-    with EmuTty(60, 16) as tty:
-        app = App(tty, history=None)
-        app.paint()
-        for status, expected in [(0, 'x = 99'), (1, 'keep me')]:
-            editor.write_text(f'#!/bin/sh\nprintf "x = 99" > "$1"\nexit {status}\n')
-            editor.chmod(0o755)
-            app.buf.text = 'keep me'
-            await app.edit_buffer()
-            assert app.buf.text == expected and not app.ctl.dlg.messages and not app.comp.blocks

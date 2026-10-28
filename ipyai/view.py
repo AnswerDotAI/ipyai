@@ -13,7 +13,8 @@ import mdhtml
 from kittytgp import render_parts, png_size, fit_grid, PNG_SIGNATURE
 from rich.syntax import Syntax
 from rich.text import Text
-from aidialog.msg_parts import parse_tools, tool_text
+from aidialog.msg_parts import tool_text
+from aihist import parse_tools
 from mdhtml2term import md_blocks
 
 __all__ = ['View', 'Item', 'gutter', 'hl', 'tool_call']

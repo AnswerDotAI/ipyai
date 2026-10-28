@@ -16,11 +16,11 @@ A kernel `input_request` opens its own one-line input in the tail. The prompt an
 
 ### AI turns
 
-A prompt Message's output is the formatted reply text, which `dlg2hist` sends to the model on later turns. While a turn streams, the controller sets that output from `StreamAccum` on every stream event. When the turn completes, it sets it from `chat.full()`. The stored form is compact: tool results are cut to about 2,000 characters, and thinking is left out. While a turn streams, thinking shows as a `🧠` placeholder. The model still has full fidelity inside a tool loop, because fastllm keeps the whole turn in `chat.hist`.
+A prompt Message's output is its saved reply, which aihist's `build` reads back into the model's input on later turns, as Solveit's turns do. While a turn streams, aihist's `Reply` gives the text to show for each stream event: the reply's text, a `🧠` glyph for each thinking update, and a pending row for each running tool. When the turn completes, the controller sets the output from `chat.full()`, which replaces the streamed text. After each tool round, the session file is saved with the reply so far in its stored form, while the screen keeps the streamed text. The stored form is compact: tool results are cut to about 2,000 characters, and thinking is left out. The model still has full fidelity inside a tool loop, because fastllm keeps the whole turn in `chat.hist`.
 
-`ai_msgs` selects what the AI sees: every Message except those hidden with `skipped`. `dlg2hist`, the scan for `$` and `!` references and inline suggestions all use it.
+The AI sees every Message except those hidden with `skipped`. `ai_msgs` applies that rule to the `$` references and to inline suggestions, and `build` applies it to the cells it sends. The controller records when each Message last ran or was added in this session, and `build` gives the model those times.
 
-A turn stopped or failed before producing anything removes its prompt, and puts the text back in the composer. A turn stopped after producing output keeps the partial reply, followed by `aidialog.dialog.INTERRUPTED`. A turn that fails after producing output keeps it too, followed by a line naming the error.
+A turn stopped or failed before producing anything removes its prompt, and puts the text back in the composer. A turn stopped after producing output keeps its reply so far, as `Reply.finish` writes it, followed by `aidialog.dialog.INTERRUPTED`. A turn that fails after producing output keeps it too, followed by a line naming the error.
 
 ### The view
 
@@ -34,7 +34,7 @@ An `Op` is one of a cell, a turn, a shell command, or a load's reruns. The app i
 
 ### Tools
 
-`KernelTools` in `tools.py` is the one tool adapter. `py` is host-owned with a static schema, so attached kernels offer it too. It runs as a cell outside the user's history. Other tools are called with `EvalOps.eval`, which returns each result in its own request. A failing call does not stop the calls queued behind it. Tool names and schemas are read at the start of each turn.
+`KernelTools` in `tools.py` is the one tool adapter. `py` is host-owned with a static schema, so attached kernels offer it too. It runs as a cell outside the user's history. Other tools run through the kernel's `call` operation. At the start of each turn, one `schemas` operation finds the tools the kernel defines. kernmini's DEV.md specifies both operations. The model sees every output of a tool's request, including what the tool prints, as aihist's `tool_result` renders it for Solveit's turns. A string result of `py` reaches the model without quotes, as a code cell's does. An output marked `full` isn't truncated. A failing call doesn't stop the calls queued behind it.
 
 ### Shell
 
@@ -55,8 +55,7 @@ Each session is one Dialog `.ipynb` under `./.ipyai/sessions/`. The controller s
 ## Deliberately not done yet
 
 - **Remote gateways.** All the machinery accepts a URL (`IPYAI_GATEWAY`), but remote use still needs token resolution shared with clikernel's `gateways.toml`. `#ai` and media references also resolve against the local filesystem. Local-only until designed.
-- **`!` references through the persistent shell: rejected.** A `` !`cmd` `` reference runs through the kernel's own `getoutput`, with solveit's semantics. Only shell-mode submissions use the persistent shell.
-- **`ranked_complete`.** Completion still uses `complete_request`. The kernel's `ranked_complete` is available when wanted.
+- **Ranked completions.** Completion uses `complete_request`, and doesn't yet sort by the `rank` that ipymini gives each `_jupyter_types_experimental` item.
 - **Compaction.** It is deferred, and llmsurgery is its designated home. It will replace `ai_msgs` as the selection of what the AI sees. The ctx meter's measured `last_req_use` is its trigger signal.
 - **Forks.** Each fork will keep its own Dialog and kernel. Switching between them will use `Controller.adopt`, which never shuts a kernel down.
 - **Queueing and steering.** Tab will queue an input while the app is busy, and Enter will steer text into the running turn. fastllm's `after_tool_calls` callback can set the next prompt.
