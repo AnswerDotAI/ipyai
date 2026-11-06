@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.9
+
+### New Features
+
+- Use aihist references for $ var selection and run build in a thread ([#39](https://github.com/AnswerDotAI/ipyai/issues/39))
+
+
 ## 0.1.8
 
 ### New Features
