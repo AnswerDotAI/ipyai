@@ -3,9 +3,9 @@
 A turn's model input comes from the session Dialog through aihist's `build`, in the form Solveit's turns use. Every
 model is one fastllm `AsyncChat` built from a flat vendor-prefixed model string (e.g. 'codex/gpt-5.4'). The
 controller owns the Dialog and runs turns; this module builds them."""
-import ast
+import ast, asyncio
 from aidialog.msg_parts import Text
-from aihist import build, get_exprs, hist_xml
+from aihist import build, references, hist_xml
 from fastllm.responses import response_input
 from .config import load_config, load_sysp, SUGGEST_SP, render_sp
 
@@ -87,11 +87,11 @@ class Assistant:
         """Build the model input for prompt Message `prompt` of `dlg` with aihist's `build`, and start its stream. The `$`
         values come from one `eval` operation, and `times` gives Messages' run times by id. Returns `(chat, stream)`."""
         from fastllm.acomplete import split_vendor
-        msgs = dlg.messages[:next(i for i, m in enumerate(dlg.messages) if m is prompt) + 1]
-        names = get_exprs(ai_msgs(msgs))
+        names = references(dlg, prompt.id)['vars']
         recs = await tools.op_json(dict(eval=names)) if tools is not None and names else {}
         sp, aim = render_sp(self.sp, split_vendor(self.model)[1]), self.aim_info
-        *hist, last = response_input(build(dlg, prompt.id, aim, vars=recs, instructions=sp, times=times or {}))[0]
+        items = await asyncio.to_thread(build, dlg, prompt.id, aim, vars=recs, instructions=sp, times=times or {})
+        *hist, last = response_input(items)[0]
         if tools: tools.aim_info = aim
         schemas = await tools.schemas() if tools else None
         chat = self.make_chat(self.model, sp, tools=schemas, ns=tools.ns(schemas) if tools else {}, hist=hist)
