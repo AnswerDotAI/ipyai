@@ -2,6 +2,13 @@
 
 <!-- do not remove -->
 
+## 0.1.10
+
+### New Features
+
+- Drop JupyAsyncMultiKernelManager from KernelSession: list kernels via `request_json` and interrupt via kc ([#40](https://github.com/AnswerDotAI/ipyai/issues/40))
+
+
 ## 0.1.9
 
 ### New Features
