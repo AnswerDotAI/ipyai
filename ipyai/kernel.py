@@ -1,8 +1,7 @@
 "Kernel lifecycle over a rustygate gateway: one owned or attached kernel, its setup, and the one inbound message hook."
 import os
 from contextlib import suppress
-from jupyasyncclient.multimanager import JupyAsyncMultiKernelManager
-from jupyasyncclient import JupyAsyncKernelClient
+from jupyasyncclient import JupyAsyncKernelClient, request_json
 from . import config
 from .tools import SEED_IMPORTS
 
@@ -21,15 +20,14 @@ class KernelSession:
     message goes once to `on_jmsg`, whatever request it belongs to."""
     def __init__(self, url=None):
         self.url = url or os.environ.get('IPYAI_GATEWAY', DEFAULT_URL)
-        self.mgr, self.kc, self.kid, self.owned = None, None, None, False
+        self.kc, self.kid, self.owned = None, None, False
         self.on_jmsg = None
 
     async def start(self, kernel='', cwd=None, env=None):
         """Create an owned kernel (closed on exit), or attach to
         `kernel` by id prefix (taken as found: nothing loaded, never stopped by us). An unknown or ambiguous
         prefix raises `ValueError`. Owned kernels start in `cwd` (ours if None) with `env` laid over our environment."""
-        self.mgr = JupyAsyncMultiKernelManager(self.url)
-        try: ks = await self.mgr.list_kernels()   # reachability and auth fail here, loudly
+        try: ks = await request_json('GET', '/api/kernels', self.url)   # reachability and auth fail here, loudly
         except Exception as e: raise ConnectionError(f'no rustygate gateway at {self.url} (start one with `rustygate`): {e}') from e
         if kernel:
             ids = [k['id'] for k in ks if k['id'].startswith(kernel)]
@@ -63,7 +61,7 @@ class KernelSession:
             if name in present: continue
             with suppress(RuntimeError): await self.exec(stmt)
 
-    async def interrupt(self): await self.mgr.interrupt_kernel(self.kid)
+    async def interrupt(self): await self.kc.interrupt_kernel()
 
     async def close(self):
         "Close the client (`kc.__aexit__` is the ownership contract: an owned kernel shuts down, an attached one survives)."

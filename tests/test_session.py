@@ -37,7 +37,7 @@ async def test_session_resume_preserves_kernel(conversation, gateway, tmp_path):
     attached = await KernelSession(url=gateway).start(kernel=app.k.kid[:8])
     try: assert not attached.owned and await attached.kc.retr('x') == 99
     finally: await attached.close()
-    assert await app.k.mgr.is_alive(app.k.kid)
+    assert await app.k.kc.is_alive()
     config.STARTUP_PATH.parent.mkdir()
     config.STARTUP_PATH.write_text('startup_ran = 7\nstartup_file = __file__\n')
     other = await KernelSession(url=gateway).start(cwd=tmp_path, env=dict(IPYAI_TEST_MARK='yes'))
@@ -57,4 +57,4 @@ async def test_session_resume_preserves_kernel(conversation, gateway, tmp_path):
             resumed.ctl.resume(original)
             assert sum(m.content == NEW_KERNEL for m in resumed.ctl.dlg.messages) == 1
     finally: await other.close()
-    assert not await other.mgr.is_alive(other.kid)
+    assert not await other.kc.is_alive()
