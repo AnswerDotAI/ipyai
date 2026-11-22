@@ -14,7 +14,7 @@ nothing. A permanent pump task moves incoming frames into a queue, and a writer 
 bytes. A `gap` control frame (this client fell behind the gateway's replay ring) becomes a visible note in
 the sinks: the sentinel may have been in the lost bytes, so the note says to press Enter if the prompt seems
 stuck (at a prompt, Enter emits a fresh sentinel)."""
-import asyncio, os, uuid
+import asyncio, codecs, os, uuid
 from collections import deque
 from contextlib import suppress
 from jupyasyncclient import JupyAsyncTerminalClient
@@ -118,7 +118,7 @@ class GateShell:
         and `self.error` says why."""
         try:
             async for item in self.tc.frames():
-                if isinstance(item, dict) and item.get('type') == 'eof': self.exit_code = item.get('code')
+                if item and item[0] == 'disconnect' and len(item) > 2: self.exit_code = item[2]
                 self._in.put_nowait(item)
         except Exception as e: self.error = e
         finally: self._in.put_nowait(None)
@@ -126,10 +126,12 @@ class GateShell:
     async def _writer_loop(self):
         """One writer serializes outgoing frames, so keystrokes and resizes keep their order.
         A failed write means the shell is unusable: record why, mark dead via the same sentinel."""
+        dec = codecs.getincrementaldecoder('utf-8')('replace')
         try:
             while True:
                 kind, *a = await self._out.get()
-                if kind == 'data': await self.tc.write(a[0])
+                if kind == 'data':
+                    if text := dec.decode(a[0]): await self.tc.write(text)
                 else: await self.tc.resize(*a)
         except Exception as e:
             self.error = e
@@ -164,14 +166,12 @@ class GateShell:
                     if isinstance(item, tuple): return ('prompt', *item)
                     _sink(item)
                 item = await self._in.get()
-                if item is None or isinstance(item, dict) and item.get('type') == 'eof':
+                if item is None or item[0] == 'disconnect':
                     self.dead = True
                     _sink(self.framer.flush())
                     return 'eof'
-                if isinstance(item, dict):
-                    if item.get('type') == 'gap': _sink(GAP_NOTE % item.get('bytes', 0))
-                    continue
-                self._ready.extend(self.framer.feed(item))
+                if item[0] == 'gap': _sink(GAP_NOTE % item[1])
+                elif item[0] == 'stdout': self._ready.extend(self.framer.feed(item[1].encode()))
         finally:
             if in_fd is not None: loop.remove_reader(in_fd)
 
