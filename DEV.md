@@ -1,65 +1,21 @@
-# DEV
+# Developing ipyai
 
-This file describes how ipyai is built, and what is deliberately not done yet. teleprint's README covers the terminal UI underneath it. `meta/ipyai-redesign-proposal.md` gives the reasoning behind the current structure.
+Run `cargo develop` in this repo to build and install the binary in the fastws environment. Cargo holds the version. The Python build backend packages the executable using maturin's `bindings = "bin"`; the client doesn't import Python. Python runs in Rustygate's kernel.
 
-## Architecture
+## A submission
 
-ipyai is a rustygate client, like clikernel. rustygate runs all the time and hosts the kernels (ipymini by default) and the shell's terminal. ipyai starts and stops once per session. An unreachable gateway fails at startup with the command to run, and ipyai never starts one itself.
+1. [`Session::open`](src/gateway.rs) posts the notebook path and `dialog: {}` to `/api/kernels`, then opens its `/channels` WebSocket. A scratch session also passes `unique: true` and a separate `cwd`. A 201 response means this client started the kernel; a 200 means it joined an existing one.
+2. `Session::save_input` adds or updates a message through `/api/messages?kid=…`. To run code or a prompt, `Session::execute` sends the saved ID as `execute_request.content.cell_id` on the shell channel. Sending the source with a cell ID in metadata would attribute output, but wouldn't tell Rustygate to execute the saved prompt. Notes need only the message operation.
+3. Rustygate runs the saved cell, writes its output and broadcasts the change. ipyai batches reads of changed code outputs, including late output from an older execution. A prompt can display provisional `markdown` chunks if ipyai saw the turn start. After a mid-turn reconnect, it keeps the saved reply until the matching `cell_ops` commit instead of showing a suffix as the whole answer.
 
-The session Dialog, from aidialog, holds all conversation content. `Controller` in `controller.py` is the only code that changes it, and it runs at most one foreground operation, an `Op`, at a time. `View` in `view.py` shows each Message as keyed teleprint blocks. `App` in `cli.py` owns the keys, input focus, the composer and the status line, and is the `ui` the controller calls. The controller imports no terminal code, so tests can drive it without a terminal.
+[`src/view.rs`](src/view.rs) applies gateway broadcasts and tracks output by cell and execution ID. [`src/terminal.rs`](src/terminal.rs) routes input and renders that view through teleprint. Don't write notebook state from either: Rustygate owns prompt context, model selection, tools and serialization. Its [protocol notes](https://github.com/AnswerDotAI/rustygate/blob/main/DEV.md) and [API routes](https://github.com/AnswerDotAI/rustygate/blob/main/docs/routes.md) describe the shared behavior.
 
-### Messages and kernel output
+If part of a block has scrolled offscreen before a width change, teleprint leaves the printed rows in native scrollback. If that block then grows, only the new text appears below it, as a plain continuation. `Ctrl-T` shows the whole formatted block at the current width.
 
-The controller creates a Message when the user submits, before any work starts. A code cell runs as one `kc.reply` request whose msg_id is `{message id}.{token}`. `KernelSession` hands every inbound kernel message to `Controller.on_jmsg`, whatever request it belongs to. `on_jmsg` finds the Message named in the parent msg_id and writes the output into it with `Message.add_output`. Output that a thread prints after its cell has finished therefore still reaches that cell. Tool runs and helper calls use msg_ids that name no Message, so `on_jmsg` ignores their output. Comm messages go to the app's `%ipyai` handler whenever they arrive.
+Local diagnostics have no notebook cell ID. The transcript shows them beside the cells present when the notice arrived; they survive a notebook reload in the same session. Code tracebacks come from the saved output. The context meter reads the completed prompt's `execute_reply.metadata.context`; the client never counts tokens or queries a model catalog.
 
-A kernel `input_request` opens its own one-line input in the tail. The prompt and the answer join the cell's output, except a password answer, which is never stored.
+On exit, ipyai closes its shell and asks Rustygate to flush the notebook through the contents API. Unparented gateway stderr carries save warnings, including the location of an external conflict copy. Show those warnings even when the final flush succeeds. For a kernel it started, ipyai checks for active work, other clients and visible path-bound terminals. If it finds none, it requests Jupyter shutdown and waits for the process to stop. It avoids `DELETE /api/kernels/{id}`, which would also remove other users’ terminals. Rustygate can list the stopped process as `dead` until the path is reopened.
 
-### AI turns
+## Tests
 
-A prompt Message's output is its saved reply, which aihist's `build` reads back into the model's input on later turns, as Solveit's turns do. While a turn streams, aihist's `Reply` gives the text to show for each stream event: the reply's text, a `🧠` glyph for each thinking update, and a pending row for each running tool. When the turn completes, the controller sets the output from `chat.full()`, which replaces the streamed text. After each tool round, the session file is saved with the reply so far in its stored form, while the screen keeps the streamed text. The stored form is compact: tool results are cut to about 2,000 characters, and thinking is left out. The model still has full fidelity inside a tool loop, because fastllm keeps the whole turn in `chat.hist`.
-
-The AI sees every Message except those hidden with `skipped`, plus the current prompt when explicitly run. aihist's `references` selects the prompts whose `$` values the kernel evaluates. Its `build` uses the same context and loads media in the shared Rust core. Inline suggestions use `ai_msgs` and synchronous `hist_xml` without loading media. The controller records when each Message last ran or was added in this session, and `build` gives the model those times.
-
-A turn stopped or failed before producing anything removes its prompt, and puts the text back in the composer. A turn stopped after producing output keeps its reply so far, as `Reply.finish` writes it, followed by `aidialog.dialog.INTERRUPTED`. A turn that fails after producing output keeps it too, followed by a line naming the error.
-
-### The view
-
-`View.items(m)` gives the display items of one Message, each keyed `f'{m.id}:{part}'`. `View.mark(m)` queues a Message. Once per event-loop pass, the view compares each queued Message's items with the blocks it already shows. Equal items stay, changed ones are replaced in place, new ones go after their predecessor, and missing ones are dropped. Live output, resume, hide, edit and retry all reach the screen this way.
-
-Reply text is split into top-level Markdown spans with `mdhtml.blocks`, and `mdhtml2term` renders each span. A tool call shows as one block, folded to its call line. Blocks that belong to no Message are notes, which show errors and status.
-
-### Operations and input
-
-An `Op` is one of a cell, a turn, a shell command, or a load's reruns. The app is busy while an `Op` runs, and Enter submits nothing until it ends. Ctrl-C calls `Controller.cancel`. For a cell it interrupts the kernel. For a turn or a load it cancels the task, and interrupts the kernel as well if the kernel is running their code. Ctrl-C is handled before any other key routing. Other keys go to the first of these that exists: a pending kernel input request, the session picker, the transcript view, the composer.
-
-### Tools
-
-`KernelTools` in `tools.py` is the one tool adapter. `py` is host-owned with a static schema, so attached kernels offer it too. It runs as a cell outside the user's history. Other tools run through the kernel's `call` operation. At the start of each turn, one `schemas` operation finds the tools the kernel defines. kernmini's DEV.md specifies both operations. The model sees every output of a tool's request, including what the tool prints, as aihist's `tool_result` renders it for Solveit's turns. A string result of `py` reaches the model without quotes, as a code cell's does. An output marked `full` isn't truncated. A failing call doesn't stop the calls queued behind it.
-
-### Shell
-
-Shell submissions run in one persistent bash or zsh, a rustygate terminal that ipyai creates on first use and deletes at quit. The rc prints a private sentinel at every prompt: `ESC ] 7770;<exit code>;<pwd> BEL`. `GateShell.relay` passes bytes between the real terminal and the shell until that sentinel arrives. A `Framer` owned by the shell finds sentinels across websocket frames and across relays, and keeps the bytes that follow one. Each command runs inside `Compositor.borrow`, and a pyghostty mirror captures its cleaned output for the Message. A multi-line submission is sent as one `{ }` group, so the shell prompts once, after all of it. After each command the kernel changes to the shell's directory, best effort. A `%cd` in the kernel does not change the shell's directory.
-
-Between commands, a drain task reads background output such as `[1] Done` notices. The controller records it as a `!# background output` Message before the next operation starts, and at quit.
-
-F2 opens the composer text in `$EDITOR`, run as a local subprocess inside a borrow. Nothing is recorded.
-
-### Sessions
-
-Each session is one Dialog `.ipynb` under `./.ipyai/sessions/`. The controller saves it whole and atomically to the Dialog's `path_`: after each operation, after each tool round, and after each hide, edit or truncation. It never saves per token. The file's metadata records the kernel id, model and think level. History navigation and ghost suggestions read these files, separately for each composer mode.
-
-`ipyai -r PREFIX` resumes a session file. Bare `-r` chooses one with the picker before any kernel starts, so a session whose kernel is still alive continues on it. Otherwise the session continues on a new kernel. `Controller.resume` then appends a note telling the AI that the namespace is empty, if code has run since the last such note. Resuming shows the transcript and runs nothing.
-
-`%ipyai load` imports a dialog without displaying it. It reruns the dialog's code cells silently, under msg_ids that name no Message, so the AI keeps the file's stored outputs. Only errors show. `%ipyai reset` starts a new Dialog on the same kernel. Switching Dialogs never shuts a kernel down, and the app closes every kernel it owns at quit.
-
-## Deliberately not done yet
-
-- **Remote gateways.** All the machinery accepts a URL (`IPYAI_GATEWAY`), but remote use still needs token resolution shared with clikernel's `gateways.toml`. `#ai` and media references also resolve against the local filesystem. Local-only until designed.
-- **Ranked completions.** Completion uses `complete_request`, and doesn't yet sort by the `rank` that ipymini gives each `_jupyter_types_experimental` item.
-- **Compaction.** It is deferred, and llmsurgery is its designated home. It will replace `ai_msgs` as the selection of what the AI sees. The ctx meter's measured `last_req_use` is its trigger signal.
-- **Forks.** Each fork will keep its own Dialog and kernel. Switching between them will use `Controller.adopt`, which never shuts a kernel down.
-- **Queueing and steering.** Tab will queue an input while the app is busy, and Enter will steer text into the running turn. fastllm's `after_tool_calls` callback can set the next prompt.
-
-## Known gaps
-
-- **Kernel death and restart.** ipyai does not replace a kernel that dies, and has no restart command. Requests to a dead kernel fail. jupywire's `on_dead` hook reports a death. Handling it would start a new kernel, run its setup, and add the new-kernel note.
+Run `cargo test` for the Rust view tests and `pytest -q` for the Python acceptance tests. The acceptance suite requires the `dev` dependencies, `tmux`, and `ed`. The tests build this checkout's binary and start a disposable Rustygate. The assistant test uses a loopback model and a real kernel tool; it checks both terminal scrollback and the saved notebook. No model credentials are needed.

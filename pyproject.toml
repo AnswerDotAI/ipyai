@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.13,<2.0", "fastws-cli>=0.0.39"]
+build-backend = "fastws.build_backend"
 
 [project]
 name = "ipyai"
@@ -10,29 +10,21 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{name = "Jeremy Howard", email = "info@answer.ai"}]
-dependencies = ["fastcore>=1.12.31", "ipython>=9", "teleprint>=0.1.4", "jupyasyncclient>=0.2.30", "jupywire>=0.1.13", "ipymini>=0.1.25", "rich", "safepyrun",
-    "python-fastllm>=0.0.66", "aidialog>=0.0.38", "aihist>=0.1.5", "fastllm-claude-code>=0.0.17", "safecmd", "pyskills", "pillow", "mdhtml2term>=0.1.0", "pyghostty>=0.1.2", "kittytgp>=0.0.3"]
-
-[project.scripts]
-ipyai = "ipyai.cli:main"
+dependencies = []
 
 [project.urls]
 Source = "https://github.com/answerdotai/ipyai"
 
 [project.optional-dependencies]
-dev = ["build>=1.0.0", "rustygate>=0.1.52", "fastship>=0.0.6", "pytest", "pytest-asyncio", "pytest-xdist", "twine>=5.0.0"]
+dev = ["fastws-cli>=0.0.39", "rustygate>=0.1.54", "jupyasyncclient>=0.2.32", "ipymini>=0.1.30", "httpx", "websockets", "fastmux", "pytest", "pyghostty"]
 
-[tool.setuptools.dynamic]
-version = {attr = "ipyai.__version__"}
-
-[tool.setuptools.packages.find]
-include = ["ipyai*"]
+[tool.maturin]
+bindings = "bin"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-filterwarnings = ["ignore::DeprecationWarning:pty", "ignore:Pydantic serializer warnings:UserWarning"]
-addopts = "-p asyncio -p xdist -n 4 --dist loadfile"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }]
 
 [tool.fastship]
