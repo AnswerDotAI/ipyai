@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aihist"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "base64 0.22.1",
  "data-encoding",
@@ -505,7 +505,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1701,7 +1701,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1946,7 +1946,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2375,10 +2375,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2955,7 +2955,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3204,7 +3204,7 @@ version = "0.1.7"
 
 [[patch.unused]]
 name = "kernmini"
-version = "0.1.25"
+version = "0.1.26"
 
 [[patch.unused]]
 name = "ptymini"
@@ -3212,15 +3212,15 @@ version = "0.0.10"
 
 [[patch.unused]]
 name = "rustymath"
-version = "0.1.64"
+version = "0.1.66"
 
 [[patch.unused]]
 name = "rustymath-buffer"
-version = "0.1.64"
+version = "0.1.66"
 
 [[patch.unused]]
 name = "rustymath-timing"
-version = "0.1.64"
+version = "0.1.66"
 
 [[patch.unused]]
 name = "zmtpmini"
