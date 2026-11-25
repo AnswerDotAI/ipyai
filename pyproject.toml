@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.13,<2.0", "fastws-cli>=0.0.39"]
+requires = ["maturin>=1.13,<2.0", "fastws-cli>=0.0.42"]
 build-backend = "fastws.build_backend"
 
 [project]
@@ -16,7 +16,8 @@ dependencies = []
 Source = "https://github.com/answerdotai/ipyai"
 
 [project.optional-dependencies]
-dev = ["fastws-cli>=0.0.39", "rustygate>=0.1.54", "jupyasyncclient>=0.2.32", "ipymini>=0.1.30", "httpx", "websockets", "fastmux", "pytest", "pyghostty"]
+test = ["fastws-cli>=0.0.42", "rustygate>=0.1.54", "jupyasyncclient>=0.2.32", "ipymini>=0.1.30", "httpx", "websockets", "fastmux", "pytest", "pyghostty"]
+dev = ["ipyai[test]"]
 
 [tool.maturin]
 bindings = "bin"
