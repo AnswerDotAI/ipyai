@@ -1,6 +1,6 @@
 [package]
 name = "ipyai"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 description = "Terminal IPython and AI on a shared Rustygate notebook"
 license = "Apache-2.0"
