@@ -19,3 +19,7 @@ On exit, ipyai closes its shell and asks Rustygate to flush the notebook through
 ## Tests
 
 Run `cargo test` for the Rust view tests and `pytest -q` for the Python acceptance tests. The acceptance suite requires the `dev` dependencies, `tmux`, and `ed`. The tests build this checkout's binary and start a disposable Rustygate. The assistant test uses a loopback model and a real kernel tool; it checks both terminal scrollback and the saved notebook. No model credentials are needed.
+
+## Release
+
+Run `ship-release` from a clean `main` checkout to tag the version in `Cargo.toml`. [CI](.github/workflows/ci.yml) publishes the wheels to PyPI and attaches them to the GitHub release. For PyPI trusted publishing, use owner `AnswerDotAI`, repository `ipyai`, workflow `ci.yml`, and leave the environment blank.
