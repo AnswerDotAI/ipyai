@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "mdhtml-crate"
-version = "0.1.52"
+version = "0.1.53"
 dependencies = [
  "base64 0.23.1",
  "fast5ever",
@@ -3200,7 +3200,7 @@ version = "0.4.24"
 
 [[patch.unused]]
 name = "jupygate"
-version = "0.1.7"
+version = "0.1.8"
 
 [[patch.unused]]
 name = "kernmini"
