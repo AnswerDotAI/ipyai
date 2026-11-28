@@ -15,10 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: AnswerDotAI/.github/actions/sccache@main
+      - uses: AnswerDotAI/workflows/sccache@master
         with:
           r2-url: ${{ secrets.SCCACHE_R2 }}
-      - uses: AnswerDotAI/.github/actions/setup-uv@main
+      - uses: AnswerDotAI/workflows/setup-uv@master
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -36,13 +36,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: AnswerDotAI/.github/actions/sccache@main
+      - uses: AnswerDotAI/workflows/sccache@master
         with:
           r2-url: ${{ secrets.SCCACHE_R2 }}
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
-      - uses: AnswerDotAI/.github/actions/maturin-build@main
+      - uses: AnswerDotAI/workflows/maturin-build@master
         with:
           args: --profile dist --out dist ${{ runner.os == 'Linux' && '--zig' || '' }}
           manylinux: '2_31'

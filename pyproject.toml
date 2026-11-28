@@ -7,7 +7,7 @@ name = "ipyai"
 dynamic = ["version"]
 description = "Terminal IPython with an AI assistant on the same transcript"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{name = "Jeremy Howard", email = "info@answer.ai"}]
 dependencies = []
@@ -15,6 +15,7 @@ dependencies = []
 [project.urls]
 Source = "https://github.com/answerdotai/ipyai"
 
+Documentation = "https://answerdotai.github.io/ipyai/"
 [project.optional-dependencies]
 test = ["fastws-cli>=0.0.42", "rustygate>=0.1.54", "jupyasyncclient>=0.2.32", "ipymini>=0.1.30", "httpx", "websockets", "fastmux", "pytest", "pyghostty"]
 dev = ["ipyai[test]"]
